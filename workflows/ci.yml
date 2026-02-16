@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+
+      - name: Install Trunk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
+
+      - name: Setup Node.js (for Tailwind CSS)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Tailwind CSS
+        run: npm install -g tailwindcss
+
+      - name: Build with Trunk
+        run: trunk build
+
+      - name: Run tests (host)
+        run: cargo test
+
+      # WASM tests are a separate suite from host tests. Run them in CI to avoid missing regressions.
+      - name: Install wasm-bindgen-cli (includes wasm-bindgen-test-runner)
+        run: cargo install wasm-bindgen-cli
+
+      - name: Install Chrome (for wasm-bindgen-test-runner)
+        uses: browser-actions/setup-chrome@v1
+
+      - name: Run tests (wasm32 / browser)
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+          WASM_BINDGEN_TEST_TIMEOUT: '120'
+        run: cargo test --target wasm32-unknown-unknown
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/

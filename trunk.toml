@@ -1,0 +1,11 @@
+[build]
+target_dir = "dist"
+
+[serve]
+port = 8803
+open = true
+
+[watch]
+features = []
+
+# Tailwind is configured via index.html <link data-trunk rel="tailwind-css" ...>
