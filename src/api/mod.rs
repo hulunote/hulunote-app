@@ -506,6 +506,16 @@ impl ApiClient {
         .await
     }
 
+    pub async fn delete_note_by_id(&self, note_id: &str) -> Result<(), String> {
+        self.request::<serde_json::Value>(
+            "POST",
+            "/hulunote/update-hulunote-note",
+            Some(&serde_json::json!({ "note-id": note_id, "is-delete": true })),
+        )
+        .await
+        .map(|_| ())
+    }
+
     pub async fn get_note_navs(&self, note_id: &str) -> ApiResult<Vec<Nav>> {
         let data: serde_json::Value = self
             .request_api(

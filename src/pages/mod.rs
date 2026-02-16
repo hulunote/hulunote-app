@@ -494,6 +494,14 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
     let delete_loading: RwSignal<bool> = RwSignal::new(false);
     let delete_error: RwSignal<Option<String>> = RwSignal::new(None);
 
+    // Sidebar note delete UX (hover button in Pages list + in-page confirm modal)
+    let note_delete_open: RwSignal<bool> = RwSignal::new(false);
+    let note_delete_id: RwSignal<Option<String>> = RwSignal::new(None);
+    let note_delete_title: RwSignal<String> = RwSignal::new(String::new());
+    // no typed confirmation required for note deletion
+    let note_delete_loading: RwSignal<bool> = RwSignal::new(false);
+    let note_delete_error: RwSignal<Option<String>> = RwSignal::new(None);
+
     let search_query = app_state.0.search_query;
     let search_ref: NodeRef<html::Input> = NodeRef::new();
 
@@ -674,6 +682,53 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
                 Err(e) => delete_error.set(Some(e)),
             }
             delete_loading.set(false);
+        });
+    };
+
+    let on_open_delete_note_from_sidebar = move |note_id: String, note_title: String| {
+        // Deterministic reset on every open.
+        note_delete_loading.set(false);
+        note_delete_error.set(None);
+        note_delete_id.set(Some(note_id));
+        note_delete_title.set(note_title);
+        note_delete_open.set(true);
+    };
+
+    let on_submit_delete_note = move |_: web_sys::MouseEvent| {
+        if note_delete_loading.get_untracked() {
+            return;
+        }
+
+        let db_id = current_db_id.get_untracked().unwrap_or_default();
+        let deleting_note_id = note_delete_id.get_untracked().unwrap_or_default();
+        if db_id.trim().is_empty() || deleting_note_id.trim().is_empty() {
+            return;
+        }
+
+        note_delete_loading.set(true);
+        note_delete_error.set(None);
+        let api_client = app_state.0.api_client.get_untracked();
+
+        spawn_local(async move {
+            match api_client.delete_note_by_id(&deleting_note_id).await {
+                Ok(_) => {
+                    app_state
+                        .0
+                        .notes
+                        .update(|notes| notes.retain(|n| n.id != deleting_note_id));
+
+                    let current_path = pathname_untracked();
+                    if current_path.starts_with(&format!("/db/{}/note/{}", db_id, deleting_note_id)) {
+                        navigate.with_value(|nav| nav(&format!("/db/{}", db_id), Default::default()));
+                    }
+
+                    note_delete_open.set(false);
+                    note_delete_id.set(None);
+                    note_delete_title.set(String::new());
+                }
+                Err(e) => note_delete_error.set(Some(e)),
+            }
+            note_delete_loading.set(false);
         });
     };
 
@@ -1266,7 +1321,7 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
                                                     .next()
                                                     .unwrap_or("");
 
-                                                let note_views = notes
+                                                let filtered_notes = notes
                                                     .into_iter()
                                                     .filter(|n| n.database_id == db_id)
                                                     .filter(|n| {
@@ -1276,32 +1331,126 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
                                                             n.title.to_lowercase().contains(&q)
                                                         }
                                                     })
-                                                    .map(|n| {
-                                                        let is_selected = n.id == current_note_id;
-                                                        let variant = if is_selected {
-                                                            ButtonVariant::Accent
-                                                        } else {
-                                                            ButtonVariant::Ghost
-                                                        };
-                                                        let id = n.id.clone();
-                                                        // Use title override to match note title behavior
-                                                        let display_title = get_title_override(&db_id, &id, &n.title);
-                                                        view! {
-                                                            <Button
-                                                                variant=variant
-                                                                size=ButtonSize::Sm
-                                                                class="w-full justify-start"
-                                                                attr:aria-current=move || if is_selected { Some("page") } else { None }
-                                                                href=format!("/db/{}/note/{}", db_id, id)
-                                                            >
-                                                                {display_title}
-                                                            </Button>
-                                                        }
-                                                        .into_any()
-                                                    })
                                                     .collect::<Vec<_>>();
 
-                                                note_views
+                                                let db_id_for_list = db_id.clone();
+                                                let current_note_id_for_list = current_note_id.to_string();
+
+                                                view! {
+                                                    <For
+                                                        each=move || filtered_notes.clone()
+                                                        key=|n| n.id.clone()
+                                                        children=move |n| {
+                                                            let is_selected = n.id == current_note_id_for_list;
+                                                            let id = n.id.clone();
+                                                            let id_for_href = id.clone();
+                                                            let id_for_delete = id.clone();
+                                                            let title_for_delete = n.title.clone();
+                                                            let db_id_for_href = db_id_for_list.clone();
+
+                                                            let row_class = {
+                                                                let id = id.clone();
+                                                                move || {
+                                                                    let delete_modal_open = note_delete_open.get();
+                                                                    let is_pending_delete = note_delete_id
+                                                                        .get()
+                                                                        .as_deref()
+                                                                        == Some(id.as_str());
+
+                                                                    if is_pending_delete {
+                                                                        "group flex items-center gap-1 rounded-md bg-accent/80 px-1 transition-colors".to_string()
+                                                                    } else if is_selected {
+                                                                        "group flex items-center gap-1 rounded-md bg-accent/80 px-1 transition-colors".to_string()
+                                                                    } else if delete_modal_open {
+                                                                        "group flex items-center gap-1 rounded-md px-1 transition-colors".to_string()
+                                                                    } else {
+                                                                        "group flex items-center gap-1 rounded-md px-1 transition-colors hover:bg-accent/50".to_string()
+                                                                    }
+                                                                }
+                                                            };
+
+                                                            let is_pending_delete = {
+                                                                let id = id.clone();
+                                                                move || {
+                                                                    note_delete_id
+                                                                        .get()
+                                                                        .as_deref()
+                                                                        == Some(id.as_str())
+                                                                }
+                                                            };
+
+                                                            // Use title override to match note title behavior
+                                                            let display_title = get_title_override(&db_id_for_list, &id_for_href, &n.title);
+                                                            view! {
+                                                                <div class=row_class>
+                                                                    <a
+                                                                        class="block min-w-0 flex-1 rounded-md px-2 py-1.5 text-sm text-foreground"
+                                                                        attr:aria-current=move || if is_selected { Some("page") } else { None }
+                                                                        href=format!("/db/{}/note/{}", db_id_for_href, id_for_href)
+                                                                    >
+                                                                        <span class="block truncate">{display_title}</span>
+                                                                    </a>
+
+                                                                    {move || {
+                                                                        let pending = is_pending_delete();
+                                                                        let cls = if pending {
+                                                                            "h-7 w-7 opacity-100 transition-opacity bg-transparent hover:bg-transparent hover:text-destructive focus-visible:opacity-100"
+                                                                        } else {
+                                                                            "h-7 w-7 opacity-0 transition-opacity bg-transparent hover:bg-transparent hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
+                                                                        };
+
+                                                                        view! {
+                                                                            <Button
+                                                                                variant=ButtonVariant::Ghost
+                                                                                size=ButtonSize::Icon
+                                                                                class=cls
+                                                                                attr:title="Delete note"
+                                                                                attr:disabled={
+                                                                                    let id = id.clone();
+                                                                                    move || {
+                                                                                        note_delete_loading.get()
+                                                                                            && note_delete_id.get().as_deref() == Some(id.as_str())
+                                                                                    }
+                                                                                }
+                                                                                on:click={
+                                                                                    let note_id = id_for_delete.clone();
+                                                                                    let title = title_for_delete.clone();
+                                                                                    move |ev: web_sys::MouseEvent| {
+                                                                                        ev.prevent_default();
+                                                                                        ev.stop_propagation();
+                                                                                        on_open_delete_note_from_sidebar(note_id.clone(), title.clone());
+                                                                                    }
+                                                                                }
+                                                                            >
+                                                                                <svg
+                                                                                    xmlns="http://www.w3.org/2000/svg"
+                                                                                    width="16"
+                                                                                    height="16"
+                                                                                    viewBox="0 0 24 24"
+                                                                                    fill="none"
+                                                                                    stroke="currentColor"
+                                                                                    stroke-width="2"
+                                                                                    stroke-linecap="round"
+                                                                                    stroke-linejoin="round"
+                                                                                    aria-hidden="true"
+                                                                                >
+                                                                                    <path d="M3 6h18" />
+                                                                                    <path d="M8 6V4h8v2" />
+                                                                                    <path d="M19 6l-1 14H6L5 6" />
+                                                                                    <path d="M10 11v6" />
+                                                                                    <path d="M14 11v6" />
+                                                                                </svg>
+                                                                            </Button>
+                                                                        }
+                                                                            .into_any()
+                                                                    }}
+                                                                </div>
+                                                            }
+                                                            .into_any()
+                                                        }
+                                                    />
+                                                }
+                                                .into_any()
                                             }}
                                         </div>
                                     </CardContent>
@@ -1556,15 +1705,16 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
                                     <Button
                                         variant=ButtonVariant::Outline
                                         size=ButtonSize::Sm
+                                        class="border-transparent bg-surface text-foreground hover:bg-muted hover:text-foreground"
                                         attr:disabled=move || delete_loading.get()
                                         on:click=move |_| delete_open.set(false)
                                     >
                                         "Cancel"
                                     </Button>
                                     <Button
-                                        variant=ButtonVariant::Outline
+                                        variant=ButtonVariant::Destructive
                                         size=ButtonSize::Sm
-                                        class="border-destructive/40 text-destructive"
+                                        class="text-white"
                                         attr:disabled=move || delete_loading.get()
                                         on:click=on_submit_delete_db
                                     >
@@ -1573,6 +1723,63 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
                                                 <Spinner />
                                             </Show>
                                             {move || if delete_loading.get() { "Deleting..." } else { "Delete" }}
+                                        </span>
+                                    </Button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </Show>
+
+                <Show when=move || note_delete_open.get() fallback=|| ().into_view()>
+                    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4">
+                        <div class="w-full max-w-sm rounded-md border border-border bg-background p-4 shadow-lg">
+                            <div class="mb-3 space-y-1">
+                                <div class="text-sm font-medium text-destructive">"Delete note"</div>
+                                <div class="text-xs text-muted-foreground">
+                                    {move || format!("Are you sure you want to delete \"{}\" ?", note_delete_title.get())}
+                                </div>
+                            </div>
+
+                            <div class="space-y-2">
+                                <div class="h-0"></div>
+
+                                <Show when=move || note_delete_error.get().is_some() fallback=|| ().into_view()>
+                                    {move || note_delete_error.get().map(|e| view! {
+                                        <Alert class="border-destructive/30">
+                                            <AlertDescription class="text-destructive text-xs">{e}</AlertDescription>
+                                        </Alert>
+                                    })}
+                                </Show>
+
+                                <div class="flex items-center justify-end gap-2 pt-2">
+                                    <Button
+                                        variant=ButtonVariant::Outline
+                                        size=ButtonSize::Sm
+                                        class="border-transparent bg-surface text-foreground hover:bg-muted hover:text-foreground"
+                                        attr:disabled=move || note_delete_loading.get()
+                                        on:click=move |_| {
+                                            note_delete_open.set(false);
+                                            note_delete_loading.set(false);
+                                            note_delete_id.set(None);
+                                            note_delete_title.set(String::new());
+                                            note_delete_error.set(None);
+                                        }
+                                    >
+                                        "Cancel"
+                                    </Button>
+                                    <Button
+                                        variant=ButtonVariant::Destructive
+                                        size=ButtonSize::Sm
+                                        class="text-white"
+                                        attr:disabled=move || note_delete_loading.get()
+                                        on:click=on_submit_delete_note
+                                    >
+                                        <span class="inline-flex items-center gap-2">
+                                            <Show when=move || note_delete_loading.get() fallback=|| ().into_view()>
+                                                <Spinner />
+                                            </Show>
+                                            {move || if note_delete_loading.get() { "Deleting..." } else { "Delete" }}
                                         </span>
                                     </Button>
                                 </div>
@@ -2787,13 +2994,16 @@ pub fn DbHomePage() -> impl IntoView {
                                 <Button
                                     variant=ButtonVariant::Outline
                                     size=ButtonSize::Sm
+                                    class="border-transparent bg-foreground text-background hover:bg-muted hover:text-foreground"
                                     attr:disabled=move || delete_loading.get()
                                     on:click=move |_| delete_open.set(false)
                                 >
                                     "Cancel"
                                 </Button>
                                 <Button
+                                    variant=ButtonVariant::Destructive
                                     size=ButtonSize::Sm
+                                    class="text-white"
                                     attr:disabled=move || delete_loading.get()
                                     on:click=on_submit_delete
                                 >
