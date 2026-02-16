@@ -2272,6 +2272,14 @@ pub fn NotePage() -> impl IntoView {
 
                     let current_note_id = note_id();
 
+                    // Only keep backlinks from notes that still exist in the current note list.
+                    // This avoids showing soft-deleted notes as orphan note_id fallbacks.
+                    let notes = app_state.0.notes.get();
+                    let existing_note_ids: std::collections::HashSet<String> = notes
+                        .iter()
+                        .map(|n| n.id.clone())
+                        .collect();
+
                     // Build index for parent-chain rendering.
                     let all_navs = all_db_navs.get();
                     let mut nav_by_id: std::collections::HashMap<String, Nav> =
@@ -2289,6 +2297,9 @@ pub fn NotePage() -> impl IntoView {
                             continue;
                         }
                         if nav.note_id == current_note_id {
+                            continue;
+                        }
+                        if !existing_note_ids.contains(&nav.note_id) {
                             continue;
                         }
 
@@ -2315,15 +2326,12 @@ pub fn NotePage() -> impl IntoView {
                                 <div class="mt-2 space-y-2">
                                 {refs
                                     .into_iter()
-                                    .map(|(note_id, items)| {
-                                        let note = notes.iter().find(|n| n.id == note_id).cloned();
-                                        let note_title = note
-                                            .as_ref()
-                                            .map(|n| n.title.clone())
-                                            .unwrap_or_else(|| note_id.clone());
+                                    .filter_map(|(note_id, items)| {
+                                        let note = notes.iter().find(|n| n.id == note_id).cloned()?;
+                                        let note_title = note.title.clone();
                                         let note_href = format!("/db/{}/note/{}", db, note_id);
 
-                                        view! {
+                                        Some(view! {
                                             <div class="p-2">
                                                 <a
                                                     href=note_href
@@ -2418,7 +2426,7 @@ pub fn NotePage() -> impl IntoView {
                                                         .collect_view()}
                                                 </div>
                                             </div>
-                                        }
+                                        })
                                     })
                                     .collect_view()}
                                 </div>

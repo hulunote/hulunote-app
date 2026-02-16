@@ -750,6 +750,34 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_note_list_response_skips_soft_deleted_notes() {
+        let v = serde_json::json!({
+            "note-list": [
+                {
+                    "hulunote-notes/id": "n_alive",
+                    "hulunote-notes/database-id": "db2",
+                    "hulunote-notes/title": "Alive",
+                    "hulunote-notes/is-delete": false,
+                    "hulunote-notes/created-at": "t1",
+                    "hulunote-notes/updated-at": "t2"
+                },
+                {
+                    "hulunote-notes/id": "n_deleted",
+                    "hulunote-notes/database-id": "db2",
+                    "hulunote-notes/title": "Deleted",
+                    "hulunote-notes/is-delete": true,
+                    "hulunote-notes/created-at": "t1",
+                    "hulunote-notes/updated-at": "t2"
+                }
+            ]
+        });
+
+        let out = ApiClient::parse_note_list_response(v);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "n_alive");
+    }
+
+    #[test]
     fn test_next_available_daily_note_title_adds_suffix() {
         let base = "20260209";
 

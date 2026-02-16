@@ -370,6 +370,12 @@ impl ApiClient {
         let mut out: Vec<Note> = Vec::with_capacity(list.len());
         for item in list {
             let get_s = |k: &str| item.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
+            let get_b = |k: &str| item.get(k).and_then(|v| v.as_bool());
+
+            // Soft-deleted notes must not appear in app lists/backlinks.
+            if get_b("hulunote-notes/is-delete").unwrap_or(false) {
+                continue;
+            }
 
             let id = get_s("hulunote-notes/id").unwrap_or_default();
             let database_id = get_s("hulunote-notes/database-id").unwrap_or_default();
