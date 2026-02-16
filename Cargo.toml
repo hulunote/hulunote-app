@@ -29,6 +29,7 @@ icons = { version = "0.18.0", features = ["leptos"] }
 leptos_ui = "0.3.20"
 leptos_dom = "0.8.7" # keep aligned with the resolved Leptos patch set
 strum = "0.27.2"
+uuid = { version = "1", features = ["v4", "js"] }
 
 [dependencies.web-sys]
 version = "0.3"

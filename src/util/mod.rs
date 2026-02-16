@@ -81,39 +81,12 @@ pub(crate) fn is_uuid_like(s: &str) -> bool {
     true
 }
 
-/// Generate a UUID-like v4 id on the client.
+/// Generate a UUID v4 on the client.
 ///
 /// We use client-generated UUIDs to keep local-first IDs stable end-to-end
 /// (no tmp->real remapping).
 pub(crate) fn new_client_uuid() -> String {
-    let mut bytes = [0u8; 16];
-    for b in bytes.iter_mut() {
-        *b = (js_sys::Math::random() * 256.0).floor() as u8;
-    }
-
-    // UUID v4 variant bits.
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-
-    format!(
-        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        bytes[0],
-        bytes[1],
-        bytes[2],
-        bytes[3],
-        bytes[4],
-        bytes[5],
-        bytes[6],
-        bytes[7],
-        bytes[8],
-        bytes[9],
-        bytes[10],
-        bytes[11],
-        bytes[12],
-        bytes[13],
-        bytes[14],
-        bytes[15]
-    )
+    uuid::Uuid::new_v4().to_string()
 }
 
 pub(crate) fn now_ms() -> i64 {
