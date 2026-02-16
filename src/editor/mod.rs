@@ -50,11 +50,7 @@ pub(crate) fn apply_nav_content(navs: &mut [Nav], nav_id: &str, content: &str) -
     }
 }
 
-pub(crate) fn is_tmp_nav_id(id: &str) -> bool {
-    // Legacy helper kept for backward compatibility with old local data/tests.
-    // New IDs are UUIDs; anything non-UUID is treated as legacy optimistic id.
-    !crate::util::is_uuid_like(id)
-}
+
 
 fn utf16_to_byte_idx(s: &str, pos_utf16: u32) -> usize {
     if pos_utf16 == 0 {
@@ -164,7 +160,7 @@ fn outline_delete_state(has_any_text: bool, semantic_br_count: u32) -> OutlineDe
 #[cfg(test)]
 fn should_persist_nav_id(nav_id: &str) -> bool {
     let id = nav_id.trim();
-    !id.is_empty() && crate::util::is_uuid_like(id)
+    !id.is_empty()
 }
 
 fn ensure_trailing_break(doc: &web_sys::Document, root: &web_sys::Node) -> Option<web_sys::Node> {
@@ -586,9 +582,7 @@ fn build_ac_items(titles: &[String], q: &str) -> Vec<AcItem> {
     items
 }
 
-pub(crate) fn make_tmp_nav_id(_now_ms: u64, _rand: u64) -> String {
-    // Kept function name for compatibility with existing call sites/tests.
-    // We now use stable client-generated UUIDs end-to-end (no tmp->real remap).
+pub(crate) fn make_nav_id() -> String {
     crate::util::new_client_uuid()
 }
 
@@ -755,15 +749,6 @@ pub(crate) fn insert_soft_line_break_dom(input_el: &web_sys::HtmlElement) -> boo
     true
 }
 
-#[cfg(test)]
-pub(crate) fn swap_tmp_nav_id(navs: &mut [Nav], tmp_id: &str, real_id: &str) -> bool {
-    if let Some(n) = navs.iter_mut().find(|n| n.id == tmp_id) {
-        n.id = real_id.to_string();
-        true
-    } else {
-        false
-    }
-}
 
 pub(crate) fn get_nav_content(navs: &[Nav], nav_id: &str) -> Option<String> {
     navs.iter()
@@ -1648,7 +1633,7 @@ pub fn OutlineNode(
                                     if is_ancestor_of(&navs.get_untracked(), &dragged_id, &nav_id_sv.get_value()) {
                                         return;
                                     }
-                                    if is_tmp_nav_id(&dragged_id) {
+                                    if dragged_id.trim().is_empty() {
                                         return;
                                     }
 
@@ -2462,7 +2447,7 @@ pub fn OutlineNode(
 
                                                     if nav_id_now.trim().is_empty()
                                                         || note_id_now.trim().is_empty()
-                                                        || is_tmp_nav_id(&nav_id_now)
+                                                        
                                                     {
                                                         return;
                                                     }
@@ -3340,10 +3325,7 @@ pub fn OutlineNode(
                                                     };
 
                                                     // Local-first create: insert a UUID-backed node and start editing immediately.
-                                                    let new_id = make_tmp_nav_id(
-                                                        js_sys::Date::now() as u64,
-                                                        (js_sys::Math::random() * 1e9) as u64,
-                                                    );
+                                                    let new_id = make_nav_id();
 
                                                     navs.update(|xs| {
                                                         xs.push(Nav {
@@ -3653,12 +3635,7 @@ mod editor_delete_behavior_tests {
     fn test_should_persist_nav_id() {
         assert!(!should_persist_nav_id(""));
         assert!(!should_persist_nav_id("   "));
-        assert!(!should_persist_nav_id("tmp-1-2"));
-        assert!(should_persist_nav_id(
-            "00000000-0000-0000-0000-000000000000"
-        ));
-        // Any non-empty, non-optimistic backend id is ok.
-        // ("abc" is not a valid backend uuid)
-        assert!(!should_persist_nav_id("abc"));
+        assert!(should_persist_nav_id("invalid-id"));
+        assert!(should_persist_nav_id("abc"));
     }
 }

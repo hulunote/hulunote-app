@@ -53,38 +53,9 @@ pub(crate) fn next_available_daily_note_title(existing_notes: &[Note]) -> String
 /// - Real top-level nodes have `parid == <root_container.id>` (not all-zero).
 pub(crate) const ROOT_CONTAINER_PARENT_ID: &str = "00000000-0000-0000-0000-000000000000";
 
-/// Cheap UUID format check (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx).
-/// Used to validate note/nav identifiers across local-first flows.
-pub(crate) fn is_uuid_like(s: &str) -> bool {
-    if s.len() != 36 {
-        return false;
-    }
-    let bytes = s.as_bytes();
-    // Hyphen positions.
-    for &i in &[8_usize, 13, 18, 23] {
-        if bytes.get(i) != Some(&b'-') {
-            return false;
-        }
-    }
-
-    // Hex digits elsewhere.
-    for (i, &b) in bytes.iter().enumerate() {
-        if [8, 13, 18, 23].contains(&i) {
-            continue;
-        }
-        let ok =
-            (b'0'..=b'9').contains(&b) || (b'a'..=b'f').contains(&b) || (b'A'..=b'F').contains(&b);
-        if !ok {
-            return false;
-        }
-    }
-    true
-}
-
 /// Generate a UUID v4 on the client.
 ///
-/// We use client-generated UUIDs to keep local-first IDs stable end-to-end
-/// (no tmp->real remapping).
+/// We use client-generated UUIDs to keep local-first IDs stable end-to-end.
 pub(crate) fn new_client_uuid() -> String {
     uuid::Uuid::new_v4().to_string()
 }

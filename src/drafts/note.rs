@@ -1,6 +1,6 @@
 use crate::models::Nav;
 use crate::storage::{load_json_from_storage, save_json_to_storage};
-use crate::util::{is_uuid_like, now_ms, ROOT_CONTAINER_PARENT_ID};
+use crate::util::now_ms;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -444,39 +444,6 @@ pub(crate) fn apply_nav_meta_overrides(db_id: &str, note_id: &str, navs: &mut [N
         n.is_display = meta.is_display;
         n.is_delete = meta.is_delete;
         n.properties = meta.properties;
-    }
-}
-
-pub(crate) fn purge_non_uuid_nav_drafts(db_id: &str, note_id: &str) {
-    if db_id.trim().is_empty() || note_id.trim().is_empty() {
-        return;
-    }
-
-    let mut d = load_note_draft(db_id, note_id);
-    let before = d.navs.len() + d.nav_meta.len();
-
-    // Remove legacy optimistic ids (tmp-*) from content drafts.
-    d.navs.retain(|id, _| is_uuid_like(id));
-
-    // Remove legacy optimistic ids from meta drafts.
-    d.nav_meta.retain(|id, _| is_uuid_like(id));
-
-    // Rewrite any meta parent references that still point to non-UUID ids.
-    for (_id, f) in d.nav_meta.iter_mut() {
-        if f.updated_ms <= f.synced_ms {
-            continue;
-        }
-        let mut meta = serde_json::from_str::<NavMetaDraft>(&f.value).unwrap_or_default();
-        if !is_uuid_like(&meta.parid) && meta.parid != ROOT_CONTAINER_PARENT_ID {
-            meta.parid = ROOT_CONTAINER_PARENT_ID.to_string();
-            f.value = serde_json::to_string(&meta).unwrap_or_default();
-        }
-    }
-
-    if d.navs.len() + d.nav_meta.len() != before {
-        d.updated_ms = now_ms();
-        save_note_draft(&d);
-        index_prune_if_synced(db_id, note_id);
     }
 }
 

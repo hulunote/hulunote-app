@@ -382,7 +382,6 @@ mod tests {
     use crate::api::{ApiClient, LoginResponse, SignupRequest, SignupResponse};
     use crate::editor::{
         apply_nav_content, backfill_content_request, compute_reorder_target, get_nav_content,
-        is_tmp_nav_id, make_tmp_nav_id, swap_tmp_nav_id,
     };
     use crate::models::{Nav, Note, RecentDb, RecentNote};
     use crate::storage::upsert_lru_by_key;
@@ -527,53 +526,6 @@ mod tests {
 
         assert!(!apply_nav_content(&mut navs, "missing", "new"));
         assert_eq!(navs[0].content, "old");
-    }
-
-    #[test]
-    fn test_is_tmp_nav_id() {
-        assert!(is_tmp_nav_id("tmp-1-2"));
-        assert!(!is_tmp_nav_id("550e8400-e29b-41d4-a716-446655440000"));
-    }
-
-    #[test]
-    fn test_make_tmp_nav_id_is_uuid_like() {
-        let id = make_tmp_nav_id(123, 456);
-        assert!(crate::util::is_uuid_like(&id));
-        assert!(!is_tmp_nav_id(&id));
-    }
-
-    #[test]
-    fn test_swap_tmp_nav_id_updates_id() {
-        let mut navs = vec![Nav {
-            id: "tmp-1-2".to_string(),
-            note_id: "n".to_string(),
-            parid: "root".to_string(),
-            same_deep_order: 1.0,
-            content: "".to_string(),
-            is_display: true,
-            is_delete: false,
-            properties: None,
-        }];
-
-        assert!(swap_tmp_nav_id(&mut navs, "tmp-1-2", "real"));
-        assert_eq!(navs[0].id, "real");
-    }
-
-    #[test]
-    fn test_swap_tmp_nav_id_returns_false_when_missing() {
-        let mut navs = vec![Nav {
-            id: "x".to_string(),
-            note_id: "n".to_string(),
-            parid: "root".to_string(),
-            same_deep_order: 1.0,
-            content: "".to_string(),
-            is_display: true,
-            is_delete: false,
-            properties: None,
-        }];
-
-        assert!(!swap_tmp_nav_id(&mut navs, "tmp-1-2", "real"));
-        assert_eq!(navs[0].id, "x");
     }
 
     #[test]

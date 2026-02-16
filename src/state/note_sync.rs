@@ -2,11 +2,11 @@ use crate::api::CreateOrUpdateNavRequest;
 use crate::drafts::{
     get_due_unsynced_nav_drafts, get_due_unsynced_nav_meta_drafts, get_unsynced_nav_drafts,
     list_dirty_notes, mark_nav_meta_sync_failed, mark_nav_meta_synced, mark_nav_sync_failed,
-    mark_nav_synced, mark_title_synced, mark_title_sync_failed, purge_non_uuid_nav_drafts,
-    touch_nav, touch_nav_meta, touch_title, NavMetaDraft,
+    mark_nav_synced, mark_title_synced, mark_title_sync_failed, touch_nav, touch_nav_meta,
+    touch_title, NavMetaDraft,
 };
 use crate::state::AppContext;
-use crate::util::{is_uuid_like, now_ms};
+use crate::util::now_ms;
 use leptos::ev;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -303,7 +303,7 @@ impl NoteSyncController {
         }
 
         // Ignore invalid/legacy ids (all new flow ids are UUIDs).
-        if !is_uuid_like(&item_id) {
+        if item_id.trim().is_empty() {
             return;
         }
 
@@ -356,7 +356,7 @@ impl NoteSyncController {
         }
 
         // Ignore invalid/legacy ids (all new flow ids are UUIDs).
-        if !is_uuid_like(&nav_id) {
+        if nav_id.trim().is_empty() {
             return;
         }
 
@@ -450,9 +450,6 @@ impl NoteSyncController {
         let mut picked_title: Vec<(String, String, String, i64)> = vec![]; // db, note, title_value, updated
 
         for (db_id, note_id) in candidates.into_iter() {
-            // Cleanup legacy non-UUID drafts from old tmp-id flow.
-            purge_non_uuid_nav_drafts(&db_id, &note_id);
-
             // title (limit to one per tick, but do not block nav/meta retries)
             let draft = crate::drafts::load_note_draft(&db_id, &note_id);
             if picked_title.is_empty() {
@@ -514,7 +511,7 @@ impl NoteSyncController {
 
             // 1) Sync content drafts.
             for (db_id, note_id, nav_id, content, updated_ms) in picked_content {
-                if !is_uuid_like(&nav_id) {
+                if nav_id.trim().is_empty() {
                     continue;
                 }
 
@@ -543,7 +540,7 @@ impl NoteSyncController {
 
             // 2) Sync meta drafts.
             for (db_id, note_id, nav_id, meta, updated_ms) in picked_meta {
-                if !is_uuid_like(&nav_id) {
+                if nav_id.trim().is_empty() {
                     continue;
                 }
 
@@ -671,7 +668,7 @@ impl NoteSyncController {
         let s2 = self.clone();
         spawn_local(async move {
             for (nav_id, content, updated_ms) in picked {
-                if !is_uuid_like(&nav_id) {
+                if nav_id.trim().is_empty() {
                     continue;
                 }
 
