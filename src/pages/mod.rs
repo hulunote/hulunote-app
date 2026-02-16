@@ -2017,12 +2017,11 @@ pub fn NotePage() -> impl IntoView {
             return;
         }
 
-        // Local-first UX: when offline, we don't fetch backlinks.
+        // Local-first UX: when offline, don't fetch; keep last successful backlink cache.
         let offline_now = sync_sv
             .try_with_value(|s| !s.is_backend_online())
             .unwrap_or(false);
         if offline_now {
-            all_db_navs.set(vec![]);
             all_db_navs_loading.set(false);
             all_db_navs_error.set(None);
             return;
@@ -2063,7 +2062,7 @@ pub fn NotePage() -> impl IntoView {
                             .try_with_value(|s| !s.is_backend_online())
                             .unwrap_or(false);
                         if offline_now {
-                            all_db_navs.set(vec![]);
+                            // Keep previously loaded backlink cache while offline.
                             all_db_navs_error.set(None);
                         } else {
                             all_db_navs_error.set(Some(e.to_string()));
@@ -2807,7 +2806,12 @@ pub fn DbHomePage() -> impl IntoView {
                                 let load_notes_for_sv = load_notes_for_sv;
 
                                 spawn_local(async move {
-                                    match api_client.create_note(&id, &title).await {
+                                    let note_id = crate::util::new_client_uuid();
+                                    let root_nav_id = crate::util::new_client_uuid();
+                                    match api_client
+                                        .create_note(&id, &title, Some(&note_id), Some(&root_nav_id))
+                                        .await
+                                    {
                                         Ok(note) => {
                                             // Refresh list then navigate to note.
                                             load_notes_for_sv.with_value(|f| {

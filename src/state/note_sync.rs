@@ -1,10 +1,9 @@
 use crate::api::CreateOrUpdateNavRequest;
-use crate::cache::swap_tmp_nav_id_in_snapshot;
 use crate::drafts::{
     get_due_unsynced_nav_drafts, get_due_unsynced_nav_meta_drafts, get_unsynced_nav_drafts,
     list_dirty_notes, mark_nav_meta_sync_failed, mark_nav_meta_synced, mark_nav_sync_failed,
-    mark_nav_synced, mark_title_synced, mark_title_sync_failed, swap_tmp_nav_id_in_drafts, touch_nav,
-    touch_nav_meta, touch_title, NavMetaDraft,
+    mark_nav_synced, mark_title_synced, mark_title_sync_failed, purge_non_uuid_nav_drafts,
+    touch_nav, touch_nav_meta, touch_title, NavMetaDraft,
 };
 use crate::state::AppContext;
 use crate::util::{is_uuid_like, now_ms};
@@ -156,10 +155,10 @@ impl NoteSyncController {
     ///
     /// This is the single local-first entry point for "seed first nav" behavior:
     /// - determines root container id (best-effort)
-    /// - inserts a local optimistic node if the note is empty
+    /// - inserts a local-first editable node if the note is empty
     /// - persists snapshot + drafts (content + meta)
     ///
-    /// Returns the inserted tmp nav id when seeding happened.
+    /// Returns the inserted nav id when seeding happened.
     pub fn ensure_note_has_start_node_local(
         &self,
         db_id: &str,
@@ -185,14 +184,11 @@ impl NoteSyncController {
             return None;
         }
 
-        // Insert an optimistic node under the root container.
-        let tmp_id = crate::editor::make_tmp_nav_id(
-            js_sys::Date::now() as u64,
-            (js_sys::Math::random() * 1e9) as u64,
-        );
+        // Insert a local-first node under the root container.
+        let nav_id = crate::util::new_client_uuid();
 
         let nav = crate::models::Nav {
-            id: tmp_id.clone(),
+            id: nav_id.clone(),
             note_id: note_id.to_string(),
             parid: root_container_id,
             same_deep_order: 1.0,
@@ -214,10 +210,10 @@ impl NoteSyncController {
         );
 
         // Persist drafts so sync worker can create it on backend when online.
-        crate::drafts::touch_nav(db_id, note_id, &tmp_id, initial_content);
+        crate::drafts::touch_nav(db_id, note_id, &nav_id, initial_content);
         crate::drafts::touch_nav_meta(db_id, note_id, &nav);
 
-        Some(tmp_id)
+        Some(nav_id)
     }
 
     /// Called by OutlineEditor when editing nav changes.
@@ -306,8 +302,7 @@ impl NoteSyncController {
             return;
         }
 
-        // Local optimistic ids must NOT be upserted by id; they will be created via meta-draft
-        // (id=None) and then swapped to a real backend UUID.
+        // Ignore invalid/legacy ids (all new flow ids are UUIDs).
         if !is_uuid_like(&item_id) {
             return;
         }
@@ -360,7 +355,7 @@ impl NoteSyncController {
             return;
         }
 
-        // Local optimistic ids must be created with id=None (see retry worker). Never upsert them by id.
+        // Ignore invalid/legacy ids (all new flow ids are UUIDs).
         if !is_uuid_like(&nav_id) {
             return;
         }
@@ -455,6 +450,9 @@ impl NoteSyncController {
         let mut picked_title: Vec<(String, String, String, i64)> = vec![]; // db, note, title_value, updated
 
         for (db_id, note_id) in candidates.into_iter() {
+            // Cleanup legacy non-UUID drafts from old tmp-id flow.
+            purge_non_uuid_nav_drafts(&db_id, &note_id);
+
             // title (limit to one per tick, but do not block nav/meta retries)
             let draft = crate::drafts::load_note_draft(&db_id, &note_id);
             if picked_title.is_empty() {
@@ -514,50 +512,7 @@ impl NoteSyncController {
                 }
             }
 
-            // 1) Handle pending creates (tmp nav ids) first.
-            //    Strategy: create with id=None using meta draft; then swap tmp->real in snapshot+drafts.
-            for (db_id, note_id, nav_id, meta, updated_ms) in picked_meta.iter() {
-                if is_uuid_like(nav_id) {
-                    continue;
-                }
-
-                let req = CreateOrUpdateNavRequest {
-                    note_id: note_id.clone(),
-                    id: None,
-                    parid: Some(meta.parid.clone()),
-                    content: Some("".to_string()),
-                    order: Some(meta.same_deep_order),
-                    is_display: Some(meta.is_display),
-                    is_delete: Some(meta.is_delete),
-                    properties: meta.properties.clone(),
-                };
-
-                match api_client.upsert_nav(req).await {
-                    Ok(resp) => {
-                        s2.mark_backend_online();
-                        let new_id = resp
-                            .get("id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        if new_id.trim().is_empty() {
-                            continue;
-                        }
-
-                        swap_tmp_nav_id_in_drafts(db_id, note_id, nav_id, &new_id);
-                        swap_tmp_nav_id_in_snapshot(db_id, note_id, nav_id, &new_id);
-
-                        // Mark meta as synced under the real id.
-                        mark_nav_meta_synced(db_id, note_id, &new_id, *updated_ms);
-                    }
-                    Err(e) => {
-                        s2.mark_backend_offline_api(&e);
-                        mark_nav_meta_sync_failed(db_id, note_id, nav_id);
-                    }
-                }
-            }
-
-            // 2) Sync content drafts (skip optimistic local ids; they will be backfilled after create).
+            // 1) Sync content drafts.
             for (db_id, note_id, nav_id, content, updated_ms) in picked_content {
                 if !is_uuid_like(&nav_id) {
                     continue;
@@ -586,7 +541,7 @@ impl NoteSyncController {
                 }
             }
 
-            // 3) Sync meta drafts (non-optimistic updates).
+            // 2) Sync meta drafts.
             for (db_id, note_id, nav_id, meta, updated_ms) in picked_meta {
                 if !is_uuid_like(&nav_id) {
                     continue;

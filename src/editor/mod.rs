@@ -51,7 +51,9 @@ pub(crate) fn apply_nav_content(navs: &mut [Nav], nav_id: &str, content: &str) -
 }
 
 pub(crate) fn is_tmp_nav_id(id: &str) -> bool {
-    id.starts_with("tmp-")
+    // Legacy helper kept for backward compatibility with old local data/tests.
+    // New IDs are UUIDs; anything non-UUID is treated as legacy optimistic id.
+    !crate::util::is_uuid_like(id)
 }
 
 fn utf16_to_byte_idx(s: &str, pos_utf16: u32) -> usize {
@@ -584,8 +586,10 @@ fn build_ac_items(titles: &[String], q: &str) -> Vec<AcItem> {
     items
 }
 
-pub(crate) fn make_tmp_nav_id(now_ms: u64, rand: u64) -> String {
-    format!("tmp-{now_ms}-{rand}")
+pub(crate) fn make_tmp_nav_id(_now_ms: u64, _rand: u64) -> String {
+    // Kept function name for compatibility with existing call sites/tests.
+    // We now use stable client-generated UUIDs end-to-end (no tmp->real remap).
+    crate::util::new_client_uuid()
 }
 
 /// Insert a soft line break at the current selection inside a contenteditable element.
@@ -2182,7 +2186,12 @@ pub fn OutlineNode(
                                                                                             }
                                                                                         }
 
-                                                                                        match api_client.create_note(&db_id, &title).await {
+                                                                                        let note_id = crate::util::new_client_uuid();
+                                                                                        let root_nav_id = crate::util::new_client_uuid();
+                                                                                        match api_client
+                                                                                            .create_note(&db_id, &title, Some(&note_id), Some(&root_nav_id))
+                                                                                            .await
+                                                                                        {
                                                                                             Ok(note) => {
                                                                                                 if note.id.trim().is_empty() {
                                                                                                     leptos::logging::log!(
@@ -3258,36 +3267,15 @@ pub fn OutlineNode(
                                                         .get_untracked()
                                                         .unwrap_or_default();
 
-                                                    // Local-first tombstones:
-                                                    // - tmp ids: drop from drafts/snapshot (they never existed on backend)
-                                                    // - real ids: keep a meta draft with is_delete=true so refresh can re-apply
-                                                    //   the local delete over the server list via apply_nav_meta_overrides().
-
-                                                    let tmp_ids: Vec<String> = subtree
-                                                        .iter()
-                                                        .filter(|id| is_tmp_nav_id(id))
-                                                        .cloned()
-                                                        .collect();
-
-                                                    let real_ids: Vec<String> = subtree
-                                                        .iter()
-                                                        .filter(|id| !is_tmp_nav_id(id))
-                                                        .cloned()
-                                                        .collect();
-
-                                                    if !tmp_ids.is_empty() {
-                                                        crate::drafts::remove_navs_from_drafts(&db_id_now, &note_id_now, &tmp_ids);
-                                                        crate::cache::remove_navs_from_snapshot(&db_id_now, &note_id_now, &tmp_ids);
-                                                    }
-
-                                                    // Keep offline snapshot consistent too.
+                                                    // Local-first tombstones: keep a meta draft with is_delete=true so
+                                                    // refresh can re-apply the local delete over the server list.
                                                     crate::cache::mark_navs_deleted_in_snapshot(
                                                         &db_id_now,
                                                         &note_id_now,
-                                                        &real_ids,
+                                                        &subtree,
                                                     );
 
-                                                    for id in real_ids.into_iter() {
+                                                    for id in subtree.into_iter() {
                                                         if let Some(mut n) = all.iter().find(|n| n.id == id).cloned() {
                                                             n.is_delete = true;
                                                             let _ = sync_sv.try_with_value(|s| s.on_nav_meta_changed(&n));
@@ -3351,17 +3339,15 @@ pub fn OutlineNode(
                                                         me.same_deep_order + 1.0
                                                     };
 
-                                                    // Optimistic UI: insert a temporary node locally and start editing it
-                                                    // immediately. Replace its id once the backend returns the real id.
-
-                                                    let tmp_id = make_tmp_nav_id(
+                                                    // Local-first create: insert a UUID-backed node and start editing immediately.
+                                                    let new_id = make_tmp_nav_id(
                                                         js_sys::Date::now() as u64,
                                                         (js_sys::Math::random() * 1e9) as u64,
                                                     );
 
                                                     navs.update(|xs| {
                                                         xs.push(Nav {
-                                                            id: tmp_id.clone(),
+                                                            id: new_id.clone(),
                                                             note_id: note_id_now.clone(),
                                                             parid: parid.clone(),
                                                             same_deep_order: new_order,
@@ -3372,27 +3358,25 @@ pub fn OutlineNode(
                                                         });
                                                     });
 
-                                                    editing_id.set(Some(tmp_id.clone()));
+                                                    editing_id.set(Some(new_id.clone()));
                                                     editing_value.set(String::new());
-                                                    editing_snapshot.set(Some((tmp_id.clone(), String::new())));
+                                                    editing_snapshot.set(Some((new_id.clone(), String::new())));
                                                     target_cursor_col.set(Some(0));
 
-                                                    // Persist new node meta to drafts; retry worker will
-                                                    // create it on the backend when online and swap tmp->real.
+                                                    // Persist new node metadata/content to drafts immediately.
                                                     if let Some(n) = navs
                                                         .get_untracked()
                                                         .into_iter()
-                                                        .find(|n| n.id == tmp_id)
+                                                        .find(|n| n.id == new_id)
                                                     {
                                                         let _ = sync_sv.try_with_value(|s| s.on_nav_meta_changed(&n));
                                                     }
 
-                                                    // Also persist empty content so the draft exists.
                                                     let _ = sync_sv.try_with_value(|s| {
-                                                        s.on_nav_changed(&tmp_id, "");
+                                                        s.on_nav_changed(&new_id, "");
                                                     });
 
-                                                    // Persist snapshot so refresh won't drop the offline-created tmp node.
+                                                    // Persist snapshot so refresh won't drop the newly-created node.
                                                     let db_id_now = app_state
                                                         .0
                                                         .current_database_id

@@ -155,6 +155,12 @@ pub(crate) struct CreateNoteRequest {
     #[serde(rename = "database-id")]
     pub database_id: String,
     pub title: String,
+
+    #[serde(rename = "note-id", skip_serializing_if = "Option::is_none")]
+    pub note_id: Option<String>,
+
+    #[serde(rename = "root-nav-id", skip_serializing_if = "Option::is_none")]
+    pub root_nav_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -460,13 +466,21 @@ impl ApiClient {
         .await
     }
 
-    pub async fn create_note(&self, database_id: &str, title: &str) -> Result<Note, String> {
+    pub async fn create_note(
+        &self,
+        database_id: &str,
+        title: &str,
+        note_id: Option<&str>,
+        root_nav_id: Option<&str>,
+    ) -> Result<Note, String> {
         let data: serde_json::Value = self.request(
             "POST",
             "/hulunote/new-note",
             Some(&CreateNoteRequest {
                 database_id: database_id.to_string(),
                 title: title.to_string(),
+                note_id: note_id.map(|s| s.to_string()),
+                root_nav_id: root_nav_id.map(|s| s.to_string()),
             }),
         )
         .await?;

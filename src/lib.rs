@@ -532,12 +532,14 @@ mod tests {
     #[test]
     fn test_is_tmp_nav_id() {
         assert!(is_tmp_nav_id("tmp-1-2"));
-        assert!(!is_tmp_nav_id("real"));
+        assert!(!is_tmp_nav_id("550e8400-e29b-41d4-a716-446655440000"));
     }
 
     #[test]
-    fn test_make_tmp_nav_id_is_deterministic() {
-        assert_eq!(make_tmp_nav_id(123, 456), "tmp-123-456");
+    fn test_make_tmp_nav_id_is_uuid_like() {
+        let id = make_tmp_nav_id(123, 456);
+        assert!(crate::util::is_uuid_like(&id));
+        assert!(!is_tmp_nav_id(&id));
     }
 
     #[test]

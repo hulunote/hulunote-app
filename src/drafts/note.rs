@@ -1,6 +1,6 @@
 use crate::models::Nav;
 use crate::storage::{load_json_from_storage, save_json_to_storage};
-use crate::util::{now_ms, ROOT_CONTAINER_PARENT_ID};
+use crate::util::{is_uuid_like, now_ms, ROOT_CONTAINER_PARENT_ID};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -447,63 +447,27 @@ pub(crate) fn apply_nav_meta_overrides(db_id: &str, note_id: &str, navs: &mut [N
     }
 }
 
-pub(crate) fn swap_tmp_nav_id_in_drafts(db_id: &str, note_id: &str, tmp_id: &str, real_id: &str) {
-    if db_id.trim().is_empty() || note_id.trim().is_empty() || tmp_id.trim().is_empty() {
-        return;
-    }
-
-    let mut d = load_note_draft(db_id, note_id);
-    let mut changed = false;
-
-    if let Some(f) = d.navs.remove(tmp_id) {
-        d.navs.insert(real_id.to_string(), f);
-        changed = true;
-    }
-
-    if let Some(f) = d.nav_meta.remove(tmp_id) {
-        d.nav_meta.insert(real_id.to_string(), f);
-        changed = true;
-    }
-
-    // If other meta drafts reference tmp_id as parid, rewrite them.
-    for (_id, f) in d.nav_meta.iter_mut() {
-        if f.updated_ms <= f.synced_ms {
-            continue;
-        }
-        let mut meta = serde_json::from_str::<NavMetaDraft>(&f.value).unwrap_or_default();
-        if meta.parid == tmp_id {
-            meta.parid = real_id.to_string();
-            f.value = serde_json::to_string(&meta).unwrap_or_default();
-            changed = true;
-        }
-    }
-
-    if changed {
-        d.updated_ms = now_ms();
-        save_note_draft(&d);
-    }
-}
-
-pub(crate) fn remove_navs_from_drafts(db_id: &str, note_id: &str, ids: &[String]) {
-    if db_id.trim().is_empty() || note_id.trim().is_empty() || ids.is_empty() {
+pub(crate) fn purge_non_uuid_nav_drafts(db_id: &str, note_id: &str) {
+    if db_id.trim().is_empty() || note_id.trim().is_empty() {
         return;
     }
 
     let mut d = load_note_draft(db_id, note_id);
     let before = d.navs.len() + d.nav_meta.len();
 
-    for id in ids.iter() {
-        d.navs.remove(id);
-        d.nav_meta.remove(id);
-    }
+    // Remove legacy optimistic ids (tmp-*) from content drafts.
+    d.navs.retain(|id, _| is_uuid_like(id));
 
-    // Also rewrite meta drafts whose parid references removed nodes.
+    // Remove legacy optimistic ids from meta drafts.
+    d.nav_meta.retain(|id, _| is_uuid_like(id));
+
+    // Rewrite any meta parent references that still point to non-UUID ids.
     for (_id, f) in d.nav_meta.iter_mut() {
         if f.updated_ms <= f.synced_ms {
             continue;
         }
         let mut meta = serde_json::from_str::<NavMetaDraft>(&f.value).unwrap_or_default();
-        if ids.iter().any(|id| id == &meta.parid) {
+        if !is_uuid_like(&meta.parid) && meta.parid != ROOT_CONTAINER_PARENT_ID {
             meta.parid = ROOT_CONTAINER_PARENT_ID.to_string();
             f.value = serde_json::to_string(&meta).unwrap_or_default();
         }
