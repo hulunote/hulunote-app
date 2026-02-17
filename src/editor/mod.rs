@@ -3,7 +3,7 @@ use crate::api::CreateOrUpdateNavRequest;
 use crate::cache::{load_note_snapshot, save_note_snapshot};
 use crate::components::hooks::use_random::use_random_id_for;
 use crate::components::ui::{Command, CommandItem, CommandList, Spinner};
-use crate::drafts::{apply_nav_meta_overrides, get_nav_override, touch_nav};
+use crate::drafts::{apply_nav_meta_overrides, get_nav_override};
 use crate::models::{Nav, Note};
 use crate::state::AppContext;
 use crate::state::NoteSyncController;
@@ -2201,19 +2201,10 @@ pub fn OutlineNode(
                                                     ce_set_caret_utf16(&el, caret_utf16);
                                                 }
 
-                                                // Store draft at note-level aggregate.
-                                                let db_id = app_state_sv
-                                                    .get_value()
-                                                    .0
-                                                    .current_database_id
-                                                    .get_untracked()
-                                                    .unwrap_or_default();
-                                                let note_id = note_id_sv.get_value();
                                                 let nav_id = nav_id_sv.get_value();
-                                                // Write local draft immediately.
-                                                touch_nav(&db_id, &note_id, &nav_id, &v);
 
-                                                // Schedule debounced autosave via global controller.
+                                                // Local-first write + debounced autosave via global controller.
+                                                // (Single entrypoint: avoid UI-level direct draft writes.)
                                                 let _ = sync_sv.try_with_value(|s| s.on_nav_changed(&nav_id, &v));
 
                                                 // Autocomplete: detect an unclosed `[[...` immediately before the caret.

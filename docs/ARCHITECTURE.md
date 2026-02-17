@@ -17,7 +17,8 @@ UI Layer → State Layer → Persistence (drafts) → Sync Layer → Backend Con
 ## 1. Local-First Invariants (hard)
 
 1. **Drafts are authoritative** for any unsynced edit.
-   - UI must write to `drafts::*` immediately on input.
+   - UI must route note writes through `NoteSyncController` entrypoints immediately on input.
+   - `NoteSyncController` writes to `drafts::*` and schedules sync (single write path).
    - Sync layer reads drafts and attempts best-effort backend writes.
 2. **Snapshots are read cache** for offline / refresh. Not source of truth.
 3. **No direct backend calls from UI components.** All writes go through `NoteSyncController`.

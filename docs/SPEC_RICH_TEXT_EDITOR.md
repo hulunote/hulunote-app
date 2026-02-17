@@ -170,8 +170,8 @@ Implement:
 - Render the outline and manage editor UI state:
   - `editing_id`, `editing_value`, caret/focus behavior, drag/drop, autocomplete.
 - On input:
-  - write local draft (`touch_nav`) immediately.
-  - notify sync layer (e.g. `NoteSyncController::on_nav_changed`).
+  - call `NoteSyncController::on_nav_changed` immediately.
+  - controller persists local draft and schedules sync (single write path).
 - Must **NOT** own sync timers / retry queues / pagehide-online listeners.
   - Rationale: these callbacks outlive component mounts and easily cause "disposed" panics.
 
