@@ -269,10 +269,15 @@ impl ApiClient {
     }
 
     pub async fn login(&self, email: &str, password: &str) -> Result<LoginResponse, String> {
-        self.request("POST", "/login/web-login", Some(&LoginRequest {
-            email: email.to_string(),
-            password: password.to_string(),
-        })).await
+        self.request(
+            "POST",
+            "/login/web-login",
+            Some(&LoginRequest {
+                email: email.to_string(),
+                password: password.to_string(),
+            }),
+        )
+        .await
     }
 
     fn with_auth_headers(
@@ -295,13 +300,13 @@ impl ApiClient {
         let url = format!("{}{}", self.base_url, path);
         let mut req = client.request(method.parse().unwrap(), url);
         req = Self::with_auth_headers(req, self.get_auth_token());
-        
+
         if let Some(b) = body {
             req = req.json(b);
         }
 
         let res = req.send().await.map_err(|e| e.to_string())?;
-        
+
         if res.status().is_success() {
             res.json().await.map_err(|e| e.to_string())
         } else {
@@ -320,13 +325,13 @@ impl ApiClient {
         let url = format!("{}{}", self.base_url, path);
         let mut req = client.post(url);
         req = Self::with_auth_headers(req, self.get_auth_token());
-        
+
         if let Some(b) = body {
             req = req.json(b);
         }
 
         let res = req.send().await.map_err(ApiError::network)?;
-        
+
         if res.status().is_success() {
             res.json().await.map_err(ApiError::parse)
         } else if res.status().as_u16() == 401 {
@@ -473,17 +478,18 @@ impl ApiClient {
         note_id: Option<&str>,
         root_nav_id: Option<&str>,
     ) -> Result<Note, String> {
-        let data: serde_json::Value = self.request(
-            "POST",
-            "/hulunote/new-note",
-            Some(&CreateNoteRequest {
-                database_id: database_id.to_string(),
-                title: title.to_string(),
-                note_id: note_id.map(|s| s.to_string()),
-                root_nav_id: root_nav_id.map(|s| s.to_string()),
-            }),
-        )
-        .await?;
+        let data: serde_json::Value = self
+            .request(
+                "POST",
+                "/hulunote/new-note",
+                Some(&CreateNoteRequest {
+                    database_id: database_id.to_string(),
+                    title: title.to_string(),
+                    note_id: note_id.map(|s| s.to_string()),
+                    root_nav_id: root_nav_id.map(|s| s.to_string()),
+                }),
+            )
+            .await?;
 
         // Backend response has been observed with different shapes; accept a few common forms.
         let id = data
@@ -562,7 +568,8 @@ impl ApiClient {
         &self,
         req_body: CreateOrUpdateNavRequest,
     ) -> ApiResult<serde_json::Value> {
-        self.request_api("/hulunote/create-or-update-nav", Some(&req_body)).await
+        self.request_api("/hulunote/create-or-update-nav", Some(&req_body))
+            .await
     }
 
     pub async fn signup(

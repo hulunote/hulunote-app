@@ -2,7 +2,7 @@ use crate::api::CreateOrUpdateNavRequest;
 use crate::drafts::{
     get_due_unsynced_nav_drafts, get_due_unsynced_nav_meta_drafts, get_unsynced_nav_drafts,
     list_dirty_notes, mark_nav_meta_sync_failed, mark_nav_meta_synced, mark_nav_sync_failed,
-    mark_nav_synced, mark_title_synced, mark_title_sync_failed, touch_nav, touch_nav_meta,
+    mark_nav_synced, mark_title_sync_failed, mark_title_synced, touch_nav, touch_nav_meta,
     touch_title, NavMetaDraft,
 };
 use crate::state::AppContext;
@@ -250,7 +250,6 @@ impl NoteSyncController {
         self.schedule_autosave(format!("title:{}", note_id));
     }
 
-
     fn flush_draft_item(&self, item_id: String) {
         // Never spam backend when offline; rely on retry worker probes.
         if !self.backend_online.get_untracked() {
@@ -286,7 +285,10 @@ impl NoteSyncController {
             let note_id_clone = note_id_for_title.to_string();
             let app_state_notes = self.app_state.0.notes.clone();
             spawn_local(async move {
-                match api_client.update_note_title(&note_id_clone, &title.value).await {
+                match api_client
+                    .update_note_title(&note_id_clone, &title.value)
+                    .await
+                {
                     Ok(_) => {
                         mark_title_synced(&db_id_clone, &note_id_clone, title.updated_ms);
                         // Refresh notes list after successful title update.
@@ -455,7 +457,12 @@ impl NoteSyncController {
             if picked_title.is_empty() {
                 if let Some(title) = draft.title {
                     if title.updated_ms > title.synced_ms && title.next_retry_ms <= now {
-                        picked_title.push((db_id.clone(), note_id.clone(), title.value.clone(), title.updated_ms));
+                        picked_title.push((
+                            db_id.clone(),
+                            note_id.clone(),
+                            title.value.clone(),
+                            title.updated_ms,
+                        ));
                     }
                 }
             }
@@ -631,7 +638,11 @@ impl NoteSyncController {
                 let title_value = title.value.clone();
                 let updated_ms = title.updated_ms;
                 spawn_local(async move {
-                    if api_client.update_note_title(&note_id_clone, &title_value).await.is_ok() {
+                    if api_client
+                        .update_note_title(&note_id_clone, &title_value)
+                        .await
+                        .is_ok()
+                    {
                         mark_title_synced(&db_id_clone, &note_id_clone, updated_ms);
                     }
                 });

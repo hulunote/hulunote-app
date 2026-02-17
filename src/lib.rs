@@ -1,5 +1,6 @@
 mod api;
 mod app;
+mod bidirectional_link;
 mod cache;
 mod components;
 mod drafts;
@@ -9,7 +10,6 @@ mod pages;
 mod state;
 mod storage;
 mod util;
-mod bidirectional_link;
 
 use leptos::prelude::*;
 
@@ -26,8 +26,7 @@ mod wasm_tests {
         touch_title,
     };
     use crate::editor::{
-        should_exit_edit_on_click_target,
-        should_exit_edit_on_focusout_related_target,
+        should_exit_edit_on_click_target, should_exit_edit_on_focusout_related_target,
     };
     use crate::models::AccountInfo;
     use crate::storage::{load_user_from_storage, save_user_to_storage};

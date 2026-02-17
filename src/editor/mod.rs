@@ -1,5 +1,9 @@
 #[cfg(test)]
 use crate::api::CreateOrUpdateNavRequest;
+use crate::bidirectional_link::{
+    extract_bidirectional_links, normalize_outline_page_title, parse_bidirectional_tokens,
+    BidirectionalToken,
+};
 use crate::cache::{load_note_snapshot, save_note_snapshot};
 use crate::components::hooks::use_random::use_random_id_for;
 use crate::components::ui::{Command, CommandItem, CommandList, Spinner};
@@ -8,7 +12,6 @@ use crate::models::{Nav, Note};
 use crate::state::AppContext;
 use crate::state::NoteSyncController;
 use crate::util::ROOT_CONTAINER_PARENT_ID;
-use crate::bidirectional_link::{extract_bidirectional_links, normalize_outline_page_title, parse_bidirectional_tokens, BidirectionalToken};
 use leptos::ev;
 use leptos::html;
 use leptos::prelude::*;
@@ -49,8 +52,6 @@ pub(crate) fn apply_nav_content(navs: &mut [Nav], nav_id: &str, content: &str) -
         false
     }
 }
-
-
 
 fn utf16_to_byte_idx(s: &str, pos_utf16: u32) -> usize {
     if pos_utf16 == 0 {
@@ -552,7 +553,10 @@ fn collect_preview_lines(navs: &[Nav], limit: usize) -> Vec<String> {
     let mut by_parent: std::collections::HashMap<String, Vec<Nav>> =
         std::collections::HashMap::new();
     for n in navs.iter().filter(|n| !n.is_delete) {
-        by_parent.entry(n.parid.clone()).or_default().push(n.clone());
+        by_parent
+            .entry(n.parid.clone())
+            .or_default()
+            .push(n.clone());
     }
     for (_k, xs) in by_parent.iter_mut() {
         xs.sort_by(|a, b| {
@@ -717,7 +721,6 @@ pub(crate) fn should_exit_edit_on_click_target(target: Option<web_sys::EventTarg
 
     true
 }
-
 
 pub(crate) fn get_nav_content(navs: &[Nav], nav_id: &str) -> Option<String> {
     navs.iter()
@@ -2343,7 +2346,7 @@ pub fn OutlineNode(
 
                                                     if nav_id_now.trim().is_empty()
                                                         || note_id_now.trim().is_empty()
-                                                        
+
                                                     {
                                                         return;
                                                     }
@@ -3518,11 +3521,23 @@ mod editor_delete_behavior_tests {
 
     #[test]
     fn test_outline_delete_state() {
-        assert_eq!(outline_delete_state(true, 0), OutlineDeleteState::HasContent);
-        assert_eq!(outline_delete_state(true, 3), OutlineDeleteState::HasContent);
+        assert_eq!(
+            outline_delete_state(true, 0),
+            OutlineDeleteState::HasContent
+        );
+        assert_eq!(
+            outline_delete_state(true, 3),
+            OutlineDeleteState::HasContent
+        );
 
-        assert_eq!(outline_delete_state(false, 2), OutlineDeleteState::OnlySoftBreaks);
-        assert_eq!(outline_delete_state(false, 1), OutlineDeleteState::OnlySoftBreaks);
+        assert_eq!(
+            outline_delete_state(false, 2),
+            OutlineDeleteState::OnlySoftBreaks
+        );
+        assert_eq!(
+            outline_delete_state(false, 1),
+            OutlineDeleteState::OnlySoftBreaks
+        );
 
         assert_eq!(outline_delete_state(false, 0), OutlineDeleteState::Empty);
     }

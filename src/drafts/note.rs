@@ -185,7 +185,11 @@ fn migrate_legacy_nav_drafts(mut d: NoteDraft) -> NoteDraft {
             .or_insert_with(NavDraftState::default);
         b.content = f.value.clone();
         b.updated_ms = b.updated_ms.max(f.updated_ms);
-        b.synced_ms = if b.synced_ms == 0 { f.synced_ms } else { b.synced_ms.min(f.synced_ms) };
+        b.synced_ms = if b.synced_ms == 0 {
+            f.synced_ms
+        } else {
+            b.synced_ms.min(f.synced_ms)
+        };
         b.retry_count = b.retry_count.max(f.retry_count);
         b.next_retry_ms = b.next_retry_ms.max(f.next_retry_ms);
     }
@@ -197,7 +201,11 @@ fn migrate_legacy_nav_drafts(mut d: NoteDraft) -> NoteDraft {
             .or_insert_with(NavDraftState::default);
         b.meta = Some(serde_json::from_str::<NavMetaDraft>(&f.value).unwrap_or_default());
         b.updated_ms = b.updated_ms.max(f.updated_ms);
-        b.synced_ms = if b.synced_ms == 0 { f.synced_ms } else { b.synced_ms.min(f.synced_ms) };
+        b.synced_ms = if b.synced_ms == 0 {
+            f.synced_ms
+        } else {
+            b.synced_ms.min(f.synced_ms)
+        };
         b.retry_count = b.retry_count.max(f.retry_count);
         b.next_retry_ms = b.next_retry_ms.max(f.next_retry_ms);
     }
@@ -212,11 +220,12 @@ pub(crate) fn load_note_draft(db_id: &str, note_id: &str) -> NoteDraft {
         return NoteDraft::default();
     }
 
-    let d = load_json_from_storage::<NoteDraft>(&key(db_id, note_id)).unwrap_or_else(|| NoteDraft {
-        db_id: db_id.to_string(),
-        note_id: note_id.to_string(),
-        ..Default::default()
-    });
+    let d =
+        load_json_from_storage::<NoteDraft>(&key(db_id, note_id)).unwrap_or_else(|| NoteDraft {
+            db_id: db_id.to_string(),
+            note_id: note_id.to_string(),
+            ..Default::default()
+        });
 
     migrate_legacy_nav_drafts(d)
 }
