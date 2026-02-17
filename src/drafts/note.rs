@@ -40,15 +40,19 @@ pub(crate) struct NavDraftState {
     pub next_retry_ms: i64,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub(crate) const NOTE_DRAFT_SCHEMA_VERSION: u32 = 20260217;
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub(crate) struct NoteDraft {
+    pub schema_version: u32,
+
     pub db_id: String,
     pub note_id: String,
     pub updated_ms: i64,
 
     pub title: Option<FieldDraft>,
 
-    /// nav_id -> atomic draft bundle (content + metadata + sync state)
+    /// nav_id -> atomic draft state (content + metadata + sync state)
     #[serde(default)]
     pub nav_state: BTreeMap<String, NavDraftState>,
 
@@ -57,6 +61,21 @@ pub(crate) struct NoteDraft {
     pub navs: BTreeMap<String, FieldDraft>,
     #[serde(default)]
     pub nav_meta: BTreeMap<String, FieldDraft>,
+}
+
+impl Default for NoteDraft {
+    fn default() -> Self {
+        Self {
+            schema_version: NOTE_DRAFT_SCHEMA_VERSION,
+            db_id: String::new(),
+            note_id: String::new(),
+            updated_ms: 0,
+            title: None,
+            nav_state: BTreeMap::new(),
+            navs: BTreeMap::new(),
+            nav_meta: BTreeMap::new(),
+        }
+    }
 }
 
 fn key(db_id: &str, note_id: &str) -> String {
@@ -153,6 +172,8 @@ pub(crate) fn list_dirty_notes(limit: usize) -> Vec<(String, String)> {
 }
 
 fn migrate_legacy_nav_drafts(mut d: NoteDraft) -> NoteDraft {
+    d.schema_version = NOTE_DRAFT_SCHEMA_VERSION;
+
     if d.navs.is_empty() && d.nav_meta.is_empty() {
         return d;
     }
@@ -204,7 +225,9 @@ fn save_note_draft(d: &NoteDraft) {
     if d.db_id.trim().is_empty() || d.note_id.trim().is_empty() {
         return;
     }
-    save_json_to_storage(&key(&d.db_id, &d.note_id), d);
+    let mut out = d.clone();
+    out.schema_version = NOTE_DRAFT_SCHEMA_VERSION;
+    save_json_to_storage(&key(&out.db_id, &out.note_id), &out);
 }
 
 pub(crate) fn touch_title(db_id: &str, note_id: &str, title: &str) {

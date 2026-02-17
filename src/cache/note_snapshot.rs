@@ -6,8 +6,12 @@ fn key(db_id: &str, note_id: &str) -> String {
     format!("hulunote_note_snapshot::{db_id}::{note_id}")
 }
 
+pub(crate) const NOTE_SNAPSHOT_SCHEMA_VERSION: u32 = 20260217;
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub(crate) struct NoteSnapshot {
+    pub schema_version: u32,
+
     pub saved_ms: i64,
     pub db_id: String,
     pub note_id: String,
@@ -28,6 +32,7 @@ pub(crate) fn save_note_snapshot(
     }
 
     let snap = NoteSnapshot {
+        schema_version: NOTE_SNAPSHOT_SCHEMA_VERSION,
         saved_ms,
         db_id: db_id.to_string(),
         note_id: note_id.to_string(),
