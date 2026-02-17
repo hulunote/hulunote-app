@@ -75,6 +75,12 @@ fn byte_idx_to_utf16(s: &str, byte_idx: usize) -> u32 {
     s[..byte_idx.min(s.len())].encode_utf16().count() as u32
 }
 
+fn split_at_utf16(s: &str, pos_utf16: u32) -> (String, String) {
+    let byte_idx = utf16_to_byte_idx(s, pos_utf16);
+    let cut = byte_idx.min(s.len());
+    (s[..cut].to_string(), s[cut..].to_string())
+}
+
 // ---- contenteditable helpers (Phase 9 MVP) ----
 
 fn ce_text(el: &web_sys::HtmlElement) -> String {
@@ -3307,23 +3313,37 @@ pub fn OutlineNode(
                                                     return;
                                                 }
 
-                                                // Enter: save + create next sibling
+                                                // Enter: split at caret + create next sibling with trailing text.
                                                 if key == "Enter" {
                                                     ev.prevent_default();
 
-                                                    let current_content = editing_value.get_untracked();
                                                     let nav_id_now = nav_id_sv.get_value();
                                                     let note_id_now = note_id_sv.get_value();
 
+                                                    // IMPORTANT: on keydown, use live DOM text/selection.
+                                                    // `editing_value` can lag one keystroke behind.
+                                                    let (current_content, caret_utf16) = if let Some(el) = input().as_ref() {
+                                                        let txt = ce_text(el);
+                                                        let (caret_start, _caret_end, _len) = ce_selection_utf16(el);
+                                                        (txt, caret_start)
+                                                    } else {
+                                                        let txt = editing_value.get_untracked();
+                                                        let caret = txt.encode_utf16().count() as u32;
+                                                        (txt, caret)
+                                                    };
+
+                                                    let (left_content, right_content) =
+                                                        split_at_utf16(&current_content, caret_utf16);
+
                                                     navs.update(|xs| {
                                                         if let Some(x) = xs.iter_mut().find(|x| x.id == nav_id_now) {
-                                                            x.content = current_content.clone();
+                                                            x.content = left_content.clone();
                                                         }
                                                     });
 
                                                     // Save current node content via sync controller.
                                                     let _ = sync_sv.try_with_value(|s| {
-                                                        s.on_nav_changed(&nav_id_now, &current_content);
+                                                        s.on_nav_changed(&nav_id_now, &left_content);
                                                     });
 
                                                     // Create sibling
@@ -3362,7 +3382,7 @@ pub fn OutlineNode(
                                                             note_id: note_id_now.clone(),
                                                             parid: parid.clone(),
                                                             same_deep_order: new_order,
-                                                            content: String::new(),
+                                                            content: right_content.clone(),
                                                             is_display: true,
                                                             is_delete: false,
                                                             properties: None,
@@ -3370,8 +3390,9 @@ pub fn OutlineNode(
                                                     });
 
                                                     editing_id.set(Some(new_id.clone()));
-                                                    editing_value.set(String::new());
-                                                    editing_snapshot.set(Some((new_id.clone(), String::new())));
+                                                    editing_value.set(right_content.clone());
+                                                    editing_snapshot
+                                                        .set(Some((new_id.clone(), right_content.clone())));
                                                     target_cursor_col.set(Some(0));
 
                                                     // Persist new node metadata/content to drafts immediately.
@@ -3384,7 +3405,7 @@ pub fn OutlineNode(
                                                     }
 
                                                     let _ = sync_sv.try_with_value(|s| {
-                                                        s.on_nav_changed(&new_id, "");
+                                                        s.on_nav_changed(&new_id, &right_content);
                                                     });
 
                                                     // Persist snapshot so refresh won't drop the newly-created node.
@@ -3622,6 +3643,25 @@ mod editor_delete_behavior_tests {
         assert_eq!(effective_semantic_br_count(1, false), 1);
         assert_eq!(effective_semantic_br_count(1, true), 0);
         assert_eq!(effective_semantic_br_count(2, true), 1);
+    }
+
+    #[test]
+    fn test_split_at_utf16() {
+        assert_eq!(
+            split_at_utf16("hello world", 5),
+            ("hello".to_string(), " world".to_string())
+        );
+
+        // UTF-16 boundary safety with multi-byte chars.
+        assert_eq!(
+            split_at_utf16("a爱b", 2),
+            ("a爱".to_string(), "b".to_string())
+        );
+
+        assert_eq!(
+            split_at_utf16("abc", 99),
+            ("abc".to_string(), "".to_string())
+        );
     }
 
     #[test]
