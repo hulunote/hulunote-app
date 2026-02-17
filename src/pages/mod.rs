@@ -1,3 +1,4 @@
+use crate::bidirectional_link::extract_bidirectional_links;
 use crate::cache::load_note_snapshot;
 use crate::components::ui::{
     Alert, AlertDescription, Button, ButtonSize, ButtonVariant, Card, CardContent, CardDescription,
@@ -13,7 +14,6 @@ use crate::storage::{
 };
 use crate::util::next_available_daily_note_title;
 use crate::util::ROOT_CONTAINER_PARENT_ID;
-use crate::bidirectional_link::extract_bidirectional_links;
 use leptos::ev;
 use leptos::html;
 use leptos::prelude::*;
@@ -718,8 +718,10 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
                         .update(|notes| notes.retain(|n| n.id != deleting_note_id));
 
                     let current_path = pathname_untracked();
-                    if current_path.starts_with(&format!("/db/{}/note/{}", db_id, deleting_note_id)) {
-                        navigate.with_value(|nav| nav(&format!("/db/{}", db_id), Default::default()));
+                    if current_path.starts_with(&format!("/db/{}/note/{}", db_id, deleting_note_id))
+                    {
+                        navigate
+                            .with_value(|nav| nav(&format!("/db/{}", db_id), Default::default()));
                     }
 
                     note_delete_open.set(false);
@@ -2087,9 +2089,7 @@ pub fn NotePage() -> impl IntoView {
 
         // Load draft from localStorage; use if exists.
         let draft = crate::drafts::load_note_draft(&db, &id);
-        let draft_title = draft.title
-            .map(|f| f.value)
-            .unwrap_or_default();
+        let draft_title = draft.title.map(|f| f.value).unwrap_or_default();
 
         if !draft_title.is_empty() {
             // Use local draft (local-first priority).
@@ -2180,7 +2180,7 @@ pub fn NotePage() -> impl IntoView {
         app_state.0.notes.get().into_iter().find(|n| n.id == id)
     };
 
-        let title_input_class = "h-11 min-w-0 flex-1 text-3xl md:text-3xl font-semibold focus-visible:border-primary/80 focus-visible:ring-primary/35";
+    let title_input_class = "h-11 min-w-0 flex-1 text-3xl md:text-3xl font-semibold focus-visible:border-primary/80 focus-visible:ring-primary/35";
 
     view! {
         <>
@@ -2355,12 +2355,19 @@ pub fn NotePage() -> impl IntoView {
                                                             let mut cur = nav_by_id.get(&nav_id).cloned();
                                                             let root_container_parent_id =
                                                                 ROOT_CONTAINER_PARENT_ID.to_string();
+                                                            let mut outline_title = String::new();
                                                             let mut guard = 0;
                                                             while let Some(n) = cur {
                                                                 guard += 1;
                                                                 if guard > 32 {
                                                                     break;
                                                                 }
+
+                                                                let current_content = n.content.trim().to_string();
+                                                                if !current_content.is_empty() {
+                                                                    outline_title = current_content;
+                                                                }
+
                                                                 if n.parid == root_container_parent_id {
                                                                     break;
                                                                 }
@@ -2407,6 +2414,7 @@ pub fn NotePage() -> impl IntoView {
                                                             };
 
                                                             let chain_display_for_show = chain_display.clone();
+                                                            let content_display = content.trim().to_string();
                                                             view! {
                                                                 <a
                                                                     href=href
@@ -2418,7 +2426,7 @@ pub fn NotePage() -> impl IntoView {
                                                                     >
                                                                         <div class="mb-1 truncate text-[11px] text-muted-foreground">{chain_display.clone()}</div>
                                                                     </Show>
-                                                                    <span class="line-clamp-2 whitespace-pre-wrap text-muted-foreground">{content}</span>
+                                                                    <span class="line-clamp-2 whitespace-pre-wrap text-muted-foreground">{content_display}</span>
                                                                 </a>
                                                             }
                                                         })
