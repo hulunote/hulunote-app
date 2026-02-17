@@ -1,5 +1,5 @@
 use crate::models::Nav;
-use crate::storage::{load_json_from_storage, save_json_to_storage};
+use crate::storage::{load_json_from_storage, remove_storage_key, save_json_to_storage};
 use crate::util::now_ms;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -101,7 +101,9 @@ fn is_note_fully_synced(d: &NoteDraft) -> bool {
 fn index_prune_if_synced(db_id: &str, note_id: &str) {
     let d = load_note_draft(db_id, note_id);
     if is_note_fully_synced(&d) {
+        // Remove from dirty index and clear per-note draft payload to avoid storage buildup.
         index_remove_note(db_id, note_id);
+        remove_storage_key(&key(db_id, note_id));
     }
 }
 

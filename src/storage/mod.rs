@@ -42,6 +42,15 @@ pub(crate) fn save_json_to_storage<T: Serialize>(key: &str, value: &T) {
     }
 }
 
+pub(crate) fn remove_storage_key(key: &str) {
+    if key.trim().is_empty() {
+        return;
+    }
+    if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        let _ = storage.remove_item(key);
+    }
+}
+
 pub(crate) fn upsert_lru_by_key<T: Clone>(
     mut items: Vec<T>,
     item: T,
