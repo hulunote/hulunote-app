@@ -7,7 +7,7 @@ use crate::bidirectional_link::{
 use crate::cache::{load_note_snapshot, save_note_snapshot};
 use crate::components::hooks::use_random::use_random_id_for;
 use crate::components::ui::{Command, CommandItem, CommandList, Spinner};
-use crate::drafts::{apply_nav_meta_overrides, get_nav_override};
+use crate::drafts::{apply_nav_meta_overrides, get_nav_override, get_pending_nav_ids};
 use crate::models::{Nav, Note};
 use crate::state::AppContext;
 use crate::state::NoteSyncController;
@@ -852,6 +852,29 @@ pub(crate) fn compute_reorder_target(
     Some((new_parid, new_order))
 }
 
+fn merge_server_with_pending_snapshot(
+    mut server_navs: Vec<Nav>,
+    snapshot_navs: Option<Vec<Nav>>,
+    pending_ids: &std::collections::BTreeSet<String>,
+) -> Vec<Nav> {
+    let Some(snapshot_navs) = snapshot_navs else {
+        return server_navs;
+    };
+
+    let mut have: std::collections::BTreeSet<String> =
+        server_navs.iter().map(|n| n.id.clone()).collect();
+
+    for n in snapshot_navs.into_iter() {
+        if !pending_ids.contains(&n.id) || have.contains(&n.id) {
+            continue;
+        }
+        have.insert(n.id.clone());
+        server_navs.push(n);
+    }
+
+    server_navs
+}
+
 #[component]
 pub fn OutlineEditor(
     note_id: impl Fn() -> String + Clone + Send + Sync + 'static,
@@ -998,20 +1021,11 @@ pub fn OutlineEditor(
                         .into_iter()
                         .find(|n| n.id == id)
                         .map(|n| n.title);
-                    // Merge local snapshot navs (e.g. offline-created tmp nodes) so a reconnect fetch
-                    // doesn't wipe them from the UI.
-                    let mut xs = list;
-                    if let Some(snap) = load_note_snapshot(&db_id2, &id) {
-                        let mut have: std::collections::BTreeSet<String> =
-                            xs.iter().map(|n| n.id.clone()).collect();
-                        for n in snap.navs.into_iter() {
-                            if have.contains(&n.id) {
-                                continue;
-                            }
-                            have.insert(n.id.clone());
-                            xs.push(n);
-                        }
-                    }
+                    // Merge only *pending local* navs from snapshot (e.g. offline-created tmp nodes).
+                    // Never re-introduce fully-synced snapshot rows that the backend no longer returns.
+                    let pending_ids = get_pending_nav_ids(&db_id2, &id);
+                    let snapshot_navs = load_note_snapshot(&db_id2, &id).map(|s| s.navs);
+                    let mut xs = merge_server_with_pending_snapshot(list, snapshot_navs, &pending_ids);
 
                     let title2 = title.clone();
                     let maybe_tmp =
@@ -3692,6 +3706,50 @@ mod editor_delete_behavior_tests {
 
         let lines = collect_preview_lines(&[root_container, child], 8);
         assert_eq!(lines, vec!["Hello".to_string()]);
+    }
+
+    #[test]
+    fn test_merge_server_with_pending_snapshot_keeps_only_pending_missing_navs() {
+        let note_id = "n1".to_string();
+        let server = vec![Nav {
+            id: "aa".to_string(),
+            note_id: note_id.clone(),
+            parid: ROOT_CONTAINER_PARENT_ID.to_string(),
+            same_deep_order: 1.0,
+            content: "aa".to_string(),
+            is_display: true,
+            is_delete: false,
+            properties: None,
+        }];
+
+        let snapshot = vec![
+            Nav {
+                id: "bb".to_string(),
+                note_id: note_id.clone(),
+                parid: ROOT_CONTAINER_PARENT_ID.to_string(),
+                same_deep_order: 2.0,
+                content: "bb".to_string(),
+                is_display: true,
+                is_delete: false,
+                properties: None,
+            },
+            Nav {
+                id: "cc".to_string(),
+                note_id,
+                parid: ROOT_CONTAINER_PARENT_ID.to_string(),
+                same_deep_order: 3.0,
+                content: "cc".to_string(),
+                is_display: true,
+                is_delete: false,
+                properties: None,
+            },
+        ];
+
+        let pending_ids = std::collections::BTreeSet::from(["cc".to_string()]);
+        let merged = merge_server_with_pending_snapshot(server, Some(snapshot), &pending_ids);
+        let ids: Vec<String> = merged.into_iter().map(|n| n.id).collect();
+
+        assert_eq!(ids, vec!["aa".to_string(), "cc".to_string()]);
     }
 
     #[test]

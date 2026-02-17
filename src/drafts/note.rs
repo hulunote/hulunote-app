@@ -34,13 +34,17 @@ pub(crate) struct NavDraftState {
     pub meta: Option<NavMetaDraft>,
     pub updated_ms: i64,
     pub synced_ms: i64,
+    /// Whether content channel has unsynced local edits.
+    #[serde(default)]
+    pub content_dirty: bool,
     #[serde(default)]
     pub retry_count: u32,
     #[serde(default)]
     pub next_retry_ms: i64,
 }
 
-pub(crate) const NOTE_DRAFT_SCHEMA_VERSION: u32 = 20260217;
+pub(crate) const NOTE_DRAFT_SCHEMA_20260217: u32 = 20260217;
+pub(crate) const NOTE_DRAFT_SCHEMA_CURRENT: u32 = NOTE_DRAFT_SCHEMA_20260217;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub(crate) struct NoteDraft {
@@ -55,25 +59,17 @@ pub(crate) struct NoteDraft {
     /// nav_id -> atomic draft state (content + metadata + sync state)
     #[serde(default)]
     pub nav_state: BTreeMap<String, NavDraftState>,
-
-    /// Legacy fields kept for one-way migration from old local data.
-    #[serde(default)]
-    pub navs: BTreeMap<String, FieldDraft>,
-    #[serde(default)]
-    pub nav_meta: BTreeMap<String, FieldDraft>,
 }
 
 impl Default for NoteDraft {
     fn default() -> Self {
         Self {
-            schema_version: NOTE_DRAFT_SCHEMA_VERSION,
+            schema_version: NOTE_DRAFT_SCHEMA_CURRENT,
             db_id: String::new(),
             note_id: String::new(),
             updated_ms: 0,
             title: None,
             nav_state: BTreeMap::new(),
-            navs: BTreeMap::new(),
-            nav_meta: BTreeMap::new(),
         }
     }
 }
@@ -135,7 +131,9 @@ fn is_note_fully_synced(d: &NoteDraft) -> bool {
         return false;
     }
 
-    d.nav_state.values().all(|b| b.updated_ms <= b.synced_ms)
+    d.nav_state
+        .values()
+        .all(|b| (!b.content_dirty || b.updated_ms <= b.synced_ms) && b.meta.is_none())
 }
 
 fn index_prune_if_synced(db_id: &str, note_id: &str) {
@@ -171,48 +169,29 @@ pub(crate) fn list_dirty_notes(limit: usize) -> Vec<(String, String)> {
         .collect()
 }
 
-fn migrate_legacy_nav_drafts(mut d: NoteDraft) -> NoteDraft {
-    d.schema_version = NOTE_DRAFT_SCHEMA_VERSION;
-
-    if d.navs.is_empty() && d.nav_meta.is_empty() {
-        return d;
+fn normalize_note_draft_identity(mut d: NoteDraft, db_id: &str, note_id: &str) -> NoteDraft {
+    d.schema_version = NOTE_DRAFT_SCHEMA_CURRENT;
+    if d.db_id.trim().is_empty() {
+        d.db_id = db_id.to_string();
     }
-
-    for (nav_id, f) in d.navs.iter() {
-        let b = d
-            .nav_state
-            .entry(nav_id.clone())
-            .or_insert_with(NavDraftState::default);
-        b.content = f.value.clone();
-        b.updated_ms = b.updated_ms.max(f.updated_ms);
-        b.synced_ms = if b.synced_ms == 0 {
-            f.synced_ms
-        } else {
-            b.synced_ms.min(f.synced_ms)
-        };
-        b.retry_count = b.retry_count.max(f.retry_count);
-        b.next_retry_ms = b.next_retry_ms.max(f.next_retry_ms);
+    if d.note_id.trim().is_empty() {
+        d.note_id = note_id.to_string();
     }
-
-    for (nav_id, f) in d.nav_meta.iter() {
-        let b = d
-            .nav_state
-            .entry(nav_id.clone())
-            .or_insert_with(NavDraftState::default);
-        b.meta = Some(serde_json::from_str::<NavMetaDraft>(&f.value).unwrap_or_default());
-        b.updated_ms = b.updated_ms.max(f.updated_ms);
-        b.synced_ms = if b.synced_ms == 0 {
-            f.synced_ms
-        } else {
-            b.synced_ms.min(f.synced_ms)
-        };
-        b.retry_count = b.retry_count.max(f.retry_count);
-        b.next_retry_ms = b.next_retry_ms.max(f.next_retry_ms);
-    }
-
-    d.navs.clear();
-    d.nav_meta.clear();
     d
+}
+
+fn upgrade_note_draft_schema(d: NoteDraft, db_id: &str, note_id: &str) -> NoteDraft {
+    match d.schema_version {
+        // Current schema: no migration step needed yet.
+        NOTE_DRAFT_SCHEMA_CURRENT => normalize_note_draft_identity(d, db_id, note_id),
+        // Unknown/older schema: fail fast.
+        other => {
+            panic!(
+                "unsupported note draft schema_version={} for {}/{} (current={})",
+                other, db_id, note_id, NOTE_DRAFT_SCHEMA_CURRENT
+            );
+        }
+    }
 }
 
 pub(crate) fn load_note_draft(db_id: &str, note_id: &str) -> NoteDraft {
@@ -227,7 +206,7 @@ pub(crate) fn load_note_draft(db_id: &str, note_id: &str) -> NoteDraft {
             ..Default::default()
         });
 
-    migrate_legacy_nav_drafts(d)
+    upgrade_note_draft_schema(d, db_id, note_id)
 }
 
 fn save_note_draft(d: &NoteDraft) {
@@ -235,7 +214,7 @@ fn save_note_draft(d: &NoteDraft) {
         return;
     }
     let mut out = d.clone();
-    out.schema_version = NOTE_DRAFT_SCHEMA_VERSION;
+    out.schema_version = NOTE_DRAFT_SCHEMA_CURRENT;
     save_json_to_storage(&key(&out.db_id, &out.note_id), &out);
 }
 
@@ -276,6 +255,7 @@ pub(crate) fn touch_nav(db_id: &str, note_id: &str, nav_id: &str, content: &str)
         .or_insert_with(NavDraftState::default);
     b.content = content.to_string();
     b.updated_ms = now;
+    b.content_dirty = true;
 
     d.updated_ms = now;
 
@@ -362,6 +342,7 @@ pub(crate) fn mark_nav_synced(db_id: &str, note_id: &str, nav_id: &str, synced_m
         .entry(nav_id.to_string())
         .or_insert_with(NavDraftState::default);
     b.synced_ms = b.synced_ms.max(synced_ms);
+    b.content_dirty = false;
     b.retry_count = 0;
     b.next_retry_ms = 0;
 
@@ -372,7 +353,27 @@ pub(crate) fn mark_nav_synced(db_id: &str, note_id: &str, nav_id: &str, synced_m
 }
 
 pub(crate) fn mark_nav_meta_synced(db_id: &str, note_id: &str, nav_id: &str, synced_ms: i64) {
-    mark_nav_synced(db_id, note_id, nav_id, synced_ms);
+    if db_id.trim().is_empty() || note_id.trim().is_empty() || nav_id.trim().is_empty() {
+        return;
+    }
+
+    let mut d = load_note_draft(db_id, note_id);
+    let b = d
+        .nav_state
+        .entry(nav_id.to_string())
+        .or_insert_with(NavDraftState::default);
+
+    // Meta sync is tracked independently from content sync:
+    // clearing `meta` marks metadata as converged while keeping content channel untouched.
+    let _ = synced_ms;
+    b.meta = None;
+    b.retry_count = 0;
+    b.next_retry_ms = 0;
+
+    d.updated_ms = now_ms();
+    save_note_draft(&d);
+
+    index_prune_if_synced(db_id, note_id);
 }
 
 fn compute_retry_delay_ms(retry_count: u32) -> i64 {
@@ -421,7 +422,7 @@ pub(crate) fn get_due_unsynced_nav_drafts(
     let d = load_note_draft(db_id, note_id);
 
     for (nav_id, b) in d.nav_state.iter() {
-        if b.updated_ms <= b.synced_ms {
+        if !b.content_dirty || b.updated_ms <= b.synced_ms {
             continue;
         }
 
@@ -450,10 +451,6 @@ pub(crate) fn get_due_unsynced_nav_meta_drafts(
     let d = load_note_draft(db_id, note_id);
 
     for (nav_id, b) in d.nav_state.iter() {
-        if b.updated_ms <= b.synced_ms {
-            continue;
-        }
-
         if !(b.next_retry_ms == 0 || b.next_retry_ms <= now_ms) {
             continue;
         }
@@ -485,9 +482,6 @@ pub(crate) fn apply_nav_meta_overrides(db_id: &str, note_id: &str, navs: &mut [N
         let Some(b) = d.nav_state.get(&n.id) else {
             continue;
         };
-        if b.updated_ms <= b.synced_ms {
-            continue;
-        }
         let Some(meta) = b.meta.as_ref() else {
             continue;
         };
@@ -528,8 +522,31 @@ pub(crate) fn get_unsynced_nav_drafts(db_id: &str, note_id: &str) -> Vec<(String
     d.nav_state
         .iter()
         .filter_map(|(nav_id, b)| {
-            if b.updated_ms > b.synced_ms {
+            if b.content_dirty && b.updated_ms > b.synced_ms {
                 Some((nav_id.clone(), b.content.clone(), b.updated_ms))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Nav ids that still have any unsynced local state.
+///
+/// A nav is considered pending if:
+/// - content is newer than synced (`updated_ms > synced_ms`), or
+/// - metadata draft is still present (`meta.is_some()`).
+pub(crate) fn get_pending_nav_ids(db_id: &str, note_id: &str) -> BTreeSet<String> {
+    if db_id.trim().is_empty() || note_id.trim().is_empty() {
+        return BTreeSet::new();
+    }
+
+    let d = load_note_draft(db_id, note_id);
+    d.nav_state
+        .iter()
+        .filter_map(|(nav_id, b)| {
+            if (b.content_dirty && b.updated_ms > b.synced_ms) || b.meta.is_some() {
+                Some(nav_id.clone())
             } else {
                 None
             }
@@ -560,4 +577,122 @@ pub(crate) fn get_nav_override(
             }
         })
         .unwrap_or_else(|| server_content.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_draft() -> NoteDraft {
+        NoteDraft {
+            schema_version: NOTE_DRAFT_SCHEMA_CURRENT,
+            db_id: "db".to_string(),
+            note_id: "note".to_string(),
+            updated_ms: 1,
+            title: None,
+            nav_state: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn test_is_note_fully_synced_requires_meta_cleared() {
+        let mut d = base_draft();
+        d.nav_state.insert(
+            "n1".to_string(),
+            NavDraftState {
+                content: "x".to_string(),
+                meta: Some(NavMetaDraft::default()),
+                updated_ms: 10,
+                synced_ms: 10,
+                content_dirty: false,
+                retry_count: 0,
+                next_retry_ms: 0,
+            },
+        );
+
+        assert!(!is_note_fully_synced(&d));
+    }
+
+    #[test]
+    fn test_due_content_drafts_ignore_meta_only_rows() {
+        let mut d = base_draft();
+        d.nav_state.insert(
+            "meta-only".to_string(),
+            NavDraftState {
+                content: String::new(),
+                meta: Some(NavMetaDraft::default()),
+                updated_ms: 20,
+                synced_ms: 0,
+                content_dirty: false,
+                retry_count: 0,
+                next_retry_ms: 0,
+            },
+        );
+        d.nav_state.insert(
+            "content".to_string(),
+            NavDraftState {
+                content: "hello".to_string(),
+                meta: None,
+                updated_ms: 30,
+                synced_ms: 0,
+                content_dirty: true,
+                retry_count: 0,
+                next_retry_ms: 0,
+            },
+        );
+
+        let mut out = Vec::new();
+        for (id, b) in d.nav_state.iter() {
+            if b.content_dirty && b.updated_ms > b.synced_ms {
+                out.push(id.clone());
+            }
+        }
+        out.sort();
+
+        assert_eq!(out, vec!["content".to_string()]);
+    }
+
+    #[test]
+    fn test_pending_ids_include_meta_and_content_channels() {
+        let mut d = base_draft();
+        d.nav_state.insert(
+            "meta-only".to_string(),
+            NavDraftState {
+                content: String::new(),
+                meta: Some(NavMetaDraft::default()),
+                updated_ms: 1,
+                synced_ms: 1,
+                content_dirty: false,
+                retry_count: 0,
+                next_retry_ms: 0,
+            },
+        );
+        d.nav_state.insert(
+            "content-only".to_string(),
+            NavDraftState {
+                content: "x".to_string(),
+                meta: None,
+                updated_ms: 2,
+                synced_ms: 0,
+                content_dirty: true,
+                retry_count: 0,
+                next_retry_ms: 0,
+            },
+        );
+
+        let pending: BTreeSet<String> = d
+            .nav_state
+            .iter()
+            .filter_map(|(nav_id, b)| {
+                if (b.content_dirty && b.updated_ms > b.synced_ms) || b.meta.is_some() {
+                    Some(nav_id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert!(pending.contains("meta-only"));
+        assert!(pending.contains("content-only"));
+    }
 }

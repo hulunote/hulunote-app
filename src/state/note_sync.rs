@@ -228,7 +228,7 @@ impl NoteSyncController {
         };
 
         touch_nav(&db_id, &note_id, nav_id, content);
-        self.schedule_autosave(nav_id.to_string());
+        self.schedule_autosave(format!("nav:{db_id}:{note_id}:{nav_id}"));
     }
 
     pub fn on_nav_meta_changed(&self, nav: &crate::models::Nav) {
@@ -237,7 +237,7 @@ impl NoteSyncController {
         };
 
         touch_nav_meta(&db_id, &note_id, nav);
-        self.schedule_autosave(format!("meta:{}", nav.id));
+        self.schedule_autosave(format!("meta:{db_id}:{note_id}:{}", nav.id));
     }
 
     /// Called by NotePage when note title changes.
@@ -247,7 +247,7 @@ impl NoteSyncController {
         };
 
         touch_title(&db_id, &note_id, title);
-        self.schedule_autosave(format!("title:{}", note_id));
+        self.schedule_autosave(format!("title:{db_id}:{note_id}"));
     }
 
     fn flush_draft_item(&self, item_id: String) {
@@ -256,23 +256,37 @@ impl NoteSyncController {
             return;
         }
 
-        let Some((db_id, note_id)) = self.db_note_untracked() else {
-            return;
-        };
         if item_id.trim().is_empty() {
             return;
         }
 
-        // meta:{nav_id} is used for metadata autosave.
-        if let Some(id) = item_id.strip_prefix("meta:") {
-            self.flush_nav_meta_draft(id.to_string());
+        // New scoped format (stable across route changes):
+        // - nav:{db_id}:{note_id}:{nav_id}
+        // - meta:{db_id}:{note_id}:{nav_id}
+        // - title:{db_id}:{note_id}
+        if let Some(rest) = item_id.strip_prefix("meta:") {
+            let mut it = rest.splitn(3, ':');
+            let (Some(db_id), Some(note_id), Some(nav_id)) = (it.next(), it.next(), it.next())
+            else {
+                return;
+            };
+            self.flush_nav_meta_draft_scoped(
+                db_id.to_string(),
+                note_id.to_string(),
+                nav_id.to_string(),
+            );
             return;
         }
 
-        // title:{note_id} is used for title autosave.
-        if let Some(note_id_for_title) = item_id.strip_prefix("title:") {
+        if let Some(rest) = item_id.strip_prefix("title:") {
+            let mut it = rest.splitn(2, ':');
+            let (Some(db_id), Some(note_id_for_title)) = (it.next(), it.next()) else {
+                return;
+            };
+            let (db_id, note_id_for_title) = (db_id.to_string(), note_id_for_title.to_string());
+
             // Flush title - read from note draft's title field.
-            let draft = crate::drafts::load_note_draft(&db_id, note_id_for_title);
+            let draft = crate::drafts::load_note_draft(&db_id, &note_id_for_title);
             let Some(title) = draft.title else {
                 return;
             };
@@ -304,15 +318,20 @@ impl NoteSyncController {
             return;
         }
 
-        // Ignore invalid/legacy ids (all new flow ids are UUIDs).
-        if item_id.trim().is_empty() {
+        // nav-scoped item id.
+        let Some(rest) = item_id.strip_prefix("nav:") else {
             return;
-        }
+        };
+        let mut it = rest.splitn(3, ':');
+        let (Some(db_id), Some(note_id), Some(nav_id)) = (it.next(), it.next(), it.next()) else {
+            return;
+        };
+        let (db_id, note_id, nav_id) = (db_id.to_string(), note_id.to_string(), nav_id.to_string());
 
         // Source of truth: local drafts.
         let Some((_, content, updated_ms)) = get_unsynced_nav_drafts(&db_id, &note_id)
             .into_iter()
-            .find(|(id, _, _)| id == &item_id)
+            .find(|(id, _, _)| id == &nav_id)
         else {
             return;
         };
@@ -322,7 +341,7 @@ impl NoteSyncController {
         spawn_local(async move {
             let req = CreateOrUpdateNavRequest {
                 note_id: note_id.clone(),
-                id: Some(item_id.clone()),
+                id: Some(nav_id.clone()),
                 parid: None,
                 content: Some(content),
                 order: None,
@@ -334,7 +353,7 @@ impl NoteSyncController {
             match api_client.upsert_nav(req).await {
                 Ok(_) => {
                     s2.mark_backend_online();
-                    mark_nav_synced(&db_id, &note_id, &item_id, updated_ms);
+                    mark_nav_synced(&db_id, &note_id, &nav_id, updated_ms);
                 }
                 Err(e) => {
                     s2.mark_backend_offline_api(&e);
@@ -344,21 +363,13 @@ impl NoteSyncController {
         });
     }
 
-    fn flush_nav_meta_draft(&self, nav_id: String) {
+    fn flush_nav_meta_draft_scoped(&self, db_id: String, note_id: String, nav_id: String) {
         // Never spam backend when offline; rely on retry worker probes.
         if !self.backend_online.get_untracked() {
             return;
         }
 
-        let Some((db_id, note_id)) = self.db_note_untracked() else {
-            return;
-        };
-        if nav_id.trim().is_empty() {
-            return;
-        }
-
-        // Ignore invalid/legacy ids (all new flow ids are UUIDs).
-        if nav_id.trim().is_empty() {
+        if db_id.trim().is_empty() || note_id.trim().is_empty() || nav_id.trim().is_empty() {
             return;
         }
 
@@ -651,9 +662,6 @@ impl NoteSyncController {
 
         // Flush nav content drafts.
         let mut drafts = get_unsynced_nav_drafts(&db_id, &note_id);
-        if drafts.is_empty() {
-            return;
-        }
         drafts.sort_by(|a, b| b.2.cmp(&a.2));
 
         let k_recent: usize = 5;
@@ -674,6 +682,9 @@ impl NoteSyncController {
                 break;
             }
         }
+
+        // Also flush due metadata drafts (delete/reorder/collapse) on pagehide.
+        let picked_meta = get_due_unsynced_nav_meta_drafts(&db_id, &note_id, now_ms(), 10);
 
         let api_client = self.app_state.0.api_client.get_untracked();
         let s2 = self.clone();
@@ -702,6 +713,34 @@ impl NoteSyncController {
                     Err(e) => {
                         s2.mark_backend_offline_api(&e);
                         mark_nav_sync_failed(&db_id, &note_id, &nav_id);
+                    }
+                }
+            }
+
+            for (nav_id, meta, updated_ms) in picked_meta {
+                if nav_id.trim().is_empty() {
+                    continue;
+                }
+
+                let req = CreateOrUpdateNavRequest {
+                    note_id: note_id.clone(),
+                    id: Some(nav_id.clone()),
+                    parid: Some(meta.parid),
+                    content: None,
+                    order: Some(meta.same_deep_order),
+                    is_display: Some(meta.is_display),
+                    is_delete: Some(meta.is_delete),
+                    properties: meta.properties,
+                };
+
+                match api_client.upsert_nav(req).await {
+                    Ok(_) => {
+                        s2.mark_backend_online();
+                        mark_nav_meta_synced(&db_id, &note_id, &nav_id, updated_ms);
+                    }
+                    Err(e) => {
+                        s2.mark_backend_offline_api(&e);
+                        mark_nav_meta_sync_failed(&db_id, &note_id, &nav_id);
                     }
                 }
             }
