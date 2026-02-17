@@ -239,6 +239,44 @@ spawn_local(async move {
 
 `spawn_local` is required for WASM; `std::thread::spawn` does not work.
 
+### Lifecycle cleanup for DOM listeners/timers/observers (important)
+
+When integrating raw DOM APIs (`addEventListener`, `setTimeout`, `MutationObserver`, Popover API),
+prefer a lifecycle-managed pattern:
+
+1. Setup in component mount/effect scope.
+2. Store handles (listener closures, timer ids, observers).
+3. Register `on_cleanup(...)` to release everything on owner disposal/unmount.
+
+```rust
+use leptos::prelude::*;
+
+let timer_id: RwSignal<Option<i32>> = RwSignal::new(None);
+
+// setup listeners/observer...
+
+on_cleanup(move || {
+    if let Some(id) = timer_id.get_untracked() {
+        if let Some(win) = web_sys::window() {
+            win.clear_timeout_with_handle(id);
+        }
+    }
+    // removeEventListener(...)
+    // observer.disconnect()
+});
+```
+
+Why this matters:
+- Route changes and conditional rendering can dispose owners while async callbacks are still pending.
+- Without cleanup, delayed callbacks may call browser APIs on disconnected elements
+  (e.g. `showPopover()` on a detached popover), causing runtime errors.
+
+Practical rules:
+- Keep delayed interactions (e.g. hover-open after 500ms) if product needs them,
+  but always make them cancellable and cleaned up on unmount.
+- Prefer component-owned resources + `on_cleanup` (timers/listeners/observers kept in component scope).
+- Avoid global registries and element-attached private fields for cleanup bookkeeping.
+
 ---
 
 ## 5) Router / Params (CSR)

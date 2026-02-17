@@ -2355,17 +2355,11 @@ pub fn NotePage() -> impl IntoView {
                                                             let mut cur = nav_by_id.get(&nav_id).cloned();
                                                             let root_container_parent_id =
                                                                 ROOT_CONTAINER_PARENT_ID.to_string();
-                                                            let mut outline_title = String::new();
                                                             let mut guard = 0;
                                                             while let Some(n) = cur {
                                                                 guard += 1;
                                                                 if guard > 32 {
                                                                     break;
-                                                                }
-
-                                                                let current_content = n.content.trim().to_string();
-                                                                if !current_content.is_empty() {
-                                                                    outline_title = current_content;
                                                                 }
 
                                                                 if n.parid == root_container_parent_id {

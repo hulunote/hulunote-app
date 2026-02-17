@@ -95,6 +95,26 @@ fn escape_html(s: &str) -> String {
         .replace('\'', "&#39;")
 }
 
+fn set_popover_open(el: &web_sys::Element, open: bool) {
+    if !el.is_connected() {
+        return;
+    }
+
+    let is_open = el.matches(":popover-open").unwrap_or(false);
+    if open == is_open {
+        return;
+    }
+
+    let method = if open { "showPopover" } else { "hidePopover" };
+    let Ok(v) = js_sys::Reflect::get(el, &wasm_bindgen::JsValue::from_str(method)) else {
+        return;
+    };
+    let Ok(f) = v.dyn_into::<js_sys::Function>() else {
+        return;
+    };
+    let _ = f.call0(el);
+}
+
 fn wiki_highlight_html(s: &str) -> String {
     let mut out = String::new();
     for t in parse_bidirectional_tokens(s) {
@@ -1312,6 +1332,23 @@ pub fn OutlineNode(
 
     // Autocomplete list container ref (for keyboard selection scroll).
     let ac_list_ref: NodeRef<html::Div> = NodeRef::new();
+    let ac_popover_ref: NodeRef<html::Div> = NodeRef::new();
+
+    // Drive popover open/close directly from reactive state (no JS observer bridge).
+    Effect::new(move |_| {
+        let open = ac_sv.get_value().ac_open.get();
+        if let Some(pop) = ac_popover_ref.get() {
+            let el: web_sys::Element = pop.unchecked_into();
+            set_popover_open(&el, open);
+        }
+    });
+
+    on_cleanup(move || {
+        if let Some(pop) = ac_popover_ref.get_untracked() {
+            let el: web_sys::Element = pop.unchecked_into();
+            set_popover_open(&el, false);
+        }
+    });
 
     // Keep selected item visible while navigating the autocomplete menu with ArrowUp/ArrowDown.
     Effect::new(move |_| {
@@ -1861,42 +1898,99 @@ pub fn OutlineNode(
                                                                     let preview_popover_id = format!("wiki_preview_popover{}", preview_uid);
                                                                     let preview_anchor_name = format!("--wiki_preview_anchor{}", preview_uid);
 
-                                                                    let preview_script = format!(
-                                                                        r#"(() => {{
-  const trigger = document.getElementById('{trigger_id}');
-  const pop = document.getElementById('{popover_id}');
-  if (!trigger || !pop || pop.dataset.init) return;
-  pop.dataset.init = '1';
+                                                                    let preview_popover_ref: NodeRef<html::Div> = NodeRef::new();
+                                                                    let preview_trigger_hovered: RwSignal<bool> = RwSignal::new(false);
+                                                                    let preview_popover_hovered: RwSignal<bool> = RwSignal::new(false);
+                                                                    let preview_show_timer: RwSignal<Option<i32>> = RwSignal::new(None);
+                                                                    let preview_hide_timer: RwSignal<Option<i32>> = RwSignal::new(None);
 
-  let hideTimer = null;
-  let showTimer = null;
-  const showSoon = () => {{
-    if (hideTimer) {{ clearTimeout(hideTimer); hideTimer = null; }}
-    if (showTimer) clearTimeout(showTimer);
-    showTimer = setTimeout(() => {{
-      showTimer = null;
-      if (!pop.matches(':popover-open')) pop.showPopover();
-    }}, 500);
-  }};
-  const hideSoon = () => {{
-    if (showTimer) {{ clearTimeout(showTimer); showTimer = null; }}
-    if (hideTimer) clearTimeout(hideTimer);
-    hideTimer = setTimeout(() => {{
-      // Only hide if neither trigger nor popover is hovered.
-      if (!trigger.matches(':hover') && !pop.matches(':hover')) {{
-        try {{ pop.hidePopover(); }} catch (_) {{}}
-      }}
-    }}, 80);
-  }};
+                                                                    let clear_preview_show_timer = {
+                                                                        let preview_show_timer = preview_show_timer;
+                                                                        move || {
+                                                                            if let Some(id) = preview_show_timer.get_untracked() {
+                                                                                let _ = window().clear_timeout_with_handle(id);
+                                                                            }
+                                                                            preview_show_timer.set(None);
+                                                                        }
+                                                                    };
+                                                                    let clear_preview_hide_timer = {
+                                                                        let preview_hide_timer = preview_hide_timer;
+                                                                        move || {
+                                                                            if let Some(id) = preview_hide_timer.get_untracked() {
+                                                                                let _ = window().clear_timeout_with_handle(id);
+                                                                            }
+                                                                            preview_hide_timer.set(None);
+                                                                        }
+                                                                    };
 
-  trigger.addEventListener('mouseenter', showSoon);
-  trigger.addEventListener('mouseleave', hideSoon);
-  pop.addEventListener('mouseenter', showSoon);
-  pop.addEventListener('mouseleave', hideSoon);
-}})();"#,
-                                                                        trigger_id = preview_trigger_id,
-                                                                        popover_id = preview_popover_id,
-                                                                    );
+                                                                    let schedule_preview_show = {
+                                                                        let preview_popover_ref = preview_popover_ref;
+                                                                        let preview_show_timer = preview_show_timer;
+                                                                        let preview_trigger_hovered = preview_trigger_hovered;
+                                                                        let preview_popover_hovered = preview_popover_hovered;
+                                                                        move || {
+                                                                            clear_preview_hide_timer();
+                                                                            clear_preview_show_timer();
+                                                                            let cb = Closure::once_into_js(move || {
+                                                                                if !preview_trigger_hovered.get_untracked()
+                                                                                    && !preview_popover_hovered.get_untracked()
+                                                                                {
+                                                                                    return;
+                                                                                }
+                                                                                if let Some(pop) = preview_popover_ref.get_untracked() {
+                                                                                    let el: web_sys::Element = pop.unchecked_into();
+                                                                                    set_popover_open(&el, true);
+                                                                                }
+                                                                            });
+                                                                            if let Ok(id) = window()
+                                                                                .set_timeout_with_callback_and_timeout_and_arguments_0(
+                                                                                    cb.as_ref().unchecked_ref(),
+                                                                                    500,
+                                                                                )
+                                                                            {
+                                                                                preview_show_timer.set(Some(id));
+                                                                            }
+                                                                        }
+                                                                    };
+
+                                                                    let schedule_preview_hide = {
+                                                                        let preview_popover_ref = preview_popover_ref;
+                                                                        let preview_hide_timer = preview_hide_timer;
+                                                                        let preview_trigger_hovered = preview_trigger_hovered;
+                                                                        let preview_popover_hovered = preview_popover_hovered;
+                                                                        move || {
+                                                                            clear_preview_show_timer();
+                                                                            clear_preview_hide_timer();
+                                                                            let cb = Closure::once_into_js(move || {
+                                                                                if preview_trigger_hovered.get_untracked()
+                                                                                    || preview_popover_hovered.get_untracked()
+                                                                                {
+                                                                                    return;
+                                                                                }
+                                                                                if let Some(pop) = preview_popover_ref.get_untracked() {
+                                                                                    let el: web_sys::Element = pop.unchecked_into();
+                                                                                    set_popover_open(&el, false);
+                                                                                }
+                                                                            });
+                                                                            if let Ok(id) = window()
+                                                                                .set_timeout_with_callback_and_timeout_and_arguments_0(
+                                                                                    cb.as_ref().unchecked_ref(),
+                                                                                    80,
+                                                                                )
+                                                                            {
+                                                                                preview_hide_timer.set(Some(id));
+                                                                            }
+                                                                        }
+                                                                    };
+
+                                                                    on_cleanup(move || {
+                                                                        clear_preview_show_timer();
+                                                                        clear_preview_hide_timer();
+                                                                        if let Some(pop) = preview_popover_ref.get_untracked() {
+                                                                            let el: web_sys::Element = pop.unchecked_into();
+                                                                            set_popover_open(&el, false);
+                                                                        }
+                                                                    });
 
                                                                     view! {
                                                                         <>
@@ -1932,6 +2026,8 @@ pub fn OutlineNode(
                                                                                 class=link_button_class
                                                                                 style=format!("anchor-name: {}", preview_anchor_name)
                                                                                 on:mouseenter=move |_ev: web_sys::MouseEvent| {
+                                                                                    preview_trigger_hovered.set(true);
+                                                                                    schedule_preview_show();
                                                                                     if !link_exists {
                                                                                         return;
                                                                                     }
@@ -2025,6 +2121,10 @@ pub fn OutlineNode(
                                                                                         }
                                                                                         preview_loading.set(false);
                                                                                     });
+                                                                                }
+                                                                                on:mouseleave=move |_ev: web_sys::MouseEvent| {
+                                                                                    preview_trigger_hovered.set(false);
+                                                                                    schedule_preview_hide();
                                                                                 }
                                                                                 on:mousedown=move |ev: web_sys::MouseEvent| {
                                                                                     // Keep existing navigation behavior (left click only).
@@ -2123,9 +2223,18 @@ pub fn OutlineNode(
                                                                                 view! {
                                                                                     <>
                                                                                         <div
+                                                                                            node_ref=preview_popover_ref
                                                                                             id=preview_popover_id
                                                                                             popover="manual"
                                                                                             class="w-[28rem] max-w-[90vw] rounded-md border border-border-strong bg-card text-card-foreground p-3 text-xs shadow-lg"
+                                                                                            on:mouseenter=move |_ev: web_sys::MouseEvent| {
+                                                                                                preview_popover_hovered.set(true);
+                                                                                                schedule_preview_show();
+                                                                                            }
+                                                                                            on:mouseleave=move |_ev: web_sys::MouseEvent| {
+                                                                                                preview_popover_hovered.set(false);
+                                                                                                schedule_preview_hide();
+                                                                                            }
                                                                                         >
                                                                                             <div class="font-medium truncate">{title_preview_title.clone()}</div>
                                                                                             <Show when=move || preview_loading.get() fallback=|| ().into_view()>
@@ -2156,7 +2265,6 @@ pub fn OutlineNode(
                                                                                             </Show>
                                                                                         </div>
 
-                                                                                        <script>{preview_script}</script>
                                                                                     </>
                                                                                 }
                                                                                     .into_any()
@@ -2164,9 +2272,18 @@ pub fn OutlineNode(
                                                                                 view! {
                                                                                     <>
                                                                                         <div
+                                                                                            node_ref=preview_popover_ref
                                                                                             id=preview_popover_id
                                                                                             popover="manual"
                                                                                             class="w-[22rem] max-w-[90vw] rounded-md border border-border-strong bg-card text-card-foreground p-3 text-xs shadow-lg"
+                                                                                            on:mouseenter=move |_ev: web_sys::MouseEvent| {
+                                                                                                preview_popover_hovered.set(true);
+                                                                                                schedule_preview_show();
+                                                                                            }
+                                                                                            on:mouseleave=move |_ev: web_sys::MouseEvent| {
+                                                                                                preview_popover_hovered.set(false);
+                                                                                                schedule_preview_hide();
+                                                                                            }
                                                                                         >
                                                                                             <div class="font-medium truncate">{title_preview_title.clone()}</div>
                                                                                             <div class="mt-2 text-muted-foreground">
@@ -2174,7 +2291,6 @@ pub fn OutlineNode(
                                                                                             </div>
                                                                                         </div>
 
-                                                                                        <script>{preview_script}</script>
                                                                                     </>
                                                                                 }
                                                                                     .into_any()
@@ -3285,30 +3401,6 @@ pub fn OutlineNode(
                                         {move || {
                                             let popover_id = ac_popover_id_sv.get_value();
                                             let anchor_name = ac_anchor_name_sv.get_value();
-                                            let open = ac_sv.get_value().ac_open.get();
-
-                                            // A small JS bridge to sync `data-open` -> Popover API.
-                                            let sync_script = format!(
-                                                r#"(() => {{
-  const pop = document.getElementById('{id}');
-  if (!pop || pop.dataset.init) return;
-  pop.dataset.init = '1';
-
-  const sync = () => {{
-    const open = pop.getAttribute('data-open') === 'true';
-    try {{
-      if (open) pop.showPopover();
-      else pop.hidePopover();
-    }} catch (_) {{}}
-  }};
-
-  const mo = new MutationObserver(sync);
-  mo.observe(pop, {{ attributes: true, attributeFilter: ['data-open'] }});
-  sync();
-}})();"#,
-                                                id = popover_id
-                                            );
-
                                             view! {
                                                 <>
                                                     <style>
@@ -3338,9 +3430,9 @@ pub fn OutlineNode(
                                                     </style>
 
                                                     <div
+                                                        node_ref=ac_popover_ref
                                                         id=popover_id
                                                         popover="manual"
-                                                        data-open=open.to_string()
                                                         class="z-50 w-[28rem] max-w-[90vw] rounded-md border border-border-strong bg-background text-foreground p-1 text-sm shadow-lg"
                                                     >
                                                         {move || {
@@ -3433,7 +3525,6 @@ pub fn OutlineNode(
                                                         }}
                                                     </div>
 
-                                                    <script>{sync_script}</script>
                                                 </>
                                             }
                                             .into_any()
