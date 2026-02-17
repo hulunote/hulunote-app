@@ -59,6 +59,7 @@
 - [ ] Implement note deletion *(N/A: backend has no delete-note endpoint in protected routes)*
 - [x] Create page tree navigation (based on notes)
 - [x] Connect to `POST /hulunote/new-note`
+  - Supports optional `note-id` and `root-nav-id` for client-generated UUID flow
 - [ ] Connect to `POST /hulunote/get-note-list` *(deferred: we are using get-all-note-list for now; implement pagination later)*
 - [x] Connect to `POST /hulunote/get-all-note-list`
 - [x] Connect to `POST /hulunote/update-hulunote-note`
@@ -134,6 +135,13 @@ Goal: Make post-login UX match product intent: Home shows recents, databases are
   - Use soft delete: set `is-delete: true`
 - [x] Drag-and-drop reordering (supports cross-parent move; drop target is highlighted while dragging)
 - [x] Node moving (Alt+Up/Down) (order adjust only)
+
+### 6.6 Local-first architecture hardening
+
+- [x] Remove tmp-id remap flow; use client-generated UUIDs end-to-end
+- [x] Route nav input writes through `NoteSyncController` only (no UI-level direct draft writes)
+- [x] Prune synced note draft payloads from localStorage
+- [ ] Unify page-layer offline read policy (reduce per-page divergence)
 
 ## Phase 7: Bidirectional Links
 
@@ -230,18 +238,16 @@ Goal: Make post-login UX match product intent: Home shows recents, databases are
 
 ## Phase 16: Performance Optimization
 
-- [ ] Implement lazy loading
-- [ ] Implement virtualization for large lists
-- [ ] Optimize outline rendering
-- [ ] Implement optimistic updates
-- [ ] Add debouncing for auto-save
-- [ ] Implement caching
+- [ ] Establish a measurable baseline (initial render, note switch latency, typing latency)
+- [ ] Add virtualization when outline size exceeds agreed threshold (e.g., >2k visible nodes)
+- [ ] Add backlink data cache policy (TTL + invalidation rules) and measure cache hit ratio
+- [ ] Profile and optimize slow paths in outline rendering based on measured bottlenecks
 
 ## Phase 17: Testing
 
-- [ ] Write unit tests (Rust)
+- [x] Write unit tests (Rust)
 - [ ] Write integration tests
-- [ ] Set up CI/CD pipeline
+- [x] Set up CI pipeline (`.github/workflows/ci.yml`, host + wasm test suites)
 - [ ] Perform end-to-end testing
 - [ ] Test cross-platform builds
 
@@ -303,6 +309,9 @@ Goal: Make post-login UX match product intent: Home shows recents, databases are
 
 ## References
 
+- [Product + Interaction Semantics](./docs/PRODUCT.md)
+- [Architecture](./docs/ARCHITECTURE.md)
+- [API Contract](./docs/API_REFERENCE.md)
 - [Original Hulunote Frontend](https://github.com/hulunote/hulunote)
 - [Rust/UI](https://www.rust-ui.com/)
 - [Outliner](https://en.wikipedia.org/wiki/Outliner)
