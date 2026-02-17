@@ -368,6 +368,9 @@ It is written as product behavior (not implementation detail) and is intended to
   - Sibling ordering uses `same-deep-order`.
   - Collapse state uses `is-display`.
   - Deletion uses soft-delete (`is-delete`).
+- **Synthetic root container**: backend structural node(s) identified by `parid == ROOT_CONTAINER_PARENT_ID`.
+  - It is structural only and must not be rendered as user-visible outline content.
+  - Visible top-level nodes are children of root container ids.
 
 ### 9.2 Editing model
 

@@ -24,6 +24,9 @@ UI Layer → State Layer → Persistence (drafts) → Sync Layer → Backend Con
 3. **No direct backend calls from UI components.** All writes go through `NoteSyncController`.
 4. **Soft delete is a tombstone**: set `is_delete: true` in meta draft, do NOT remove from drafts.
    - UI must filter `is_delete` in rendering and traversal.
+5. **Synthetic ROOT container nodes are structural only.**
+   - Nodes with `parid == ROOT_CONTAINER_PARENT_ID` must not be rendered as user-visible content.
+   - Visible top-level rows must be derived from children of root container ids.
 
 ### Consistency Contract
 

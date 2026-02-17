@@ -518,6 +518,88 @@ fn ensure_titles_loaded(app_state: &AppContext, ac: &AutocompleteCtx) {
     });
 }
 
+fn root_container_ids(all: &[Nav]) -> std::collections::BTreeSet<String> {
+    let root_container_parent_id = ROOT_CONTAINER_PARENT_ID;
+    all.iter()
+        .filter(|n| !n.is_delete && n.parid == root_container_parent_id)
+        .map(|n| n.id.clone())
+        .collect()
+}
+
+fn collect_visible_top_level_nodes(all: &[Nav]) -> Vec<Nav> {
+    let root_ids = root_container_ids(all);
+    let mut out = if !root_ids.is_empty() {
+        all.iter()
+            .filter(|n| !n.is_delete && root_ids.contains(&n.parid))
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        all.iter()
+            .filter(|n| !n.is_delete && n.parid == ROOT_CONTAINER_PARENT_ID)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+
+    out.sort_by(|a, b| {
+        a.same_deep_order
+            .partial_cmp(&b.same_deep_order)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    out
+}
+
+fn collect_preview_lines(navs: &[Nav], limit: usize) -> Vec<String> {
+    let mut by_parent: std::collections::HashMap<String, Vec<Nav>> =
+        std::collections::HashMap::new();
+    for n in navs.iter().filter(|n| !n.is_delete) {
+        by_parent.entry(n.parid.clone()).or_default().push(n.clone());
+    }
+    for (_k, xs) in by_parent.iter_mut() {
+        xs.sort_by(|a, b| {
+            a.same_deep_order
+                .partial_cmp(&b.same_deep_order)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+
+    fn walk(
+        by_parent: &std::collections::HashMap<String, Vec<Nav>>,
+        parid: &str,
+        depth: usize,
+        out: &mut Vec<String>,
+        limit: usize,
+    ) {
+        if out.len() >= limit {
+            return;
+        }
+        let Some(kids) = by_parent.get(parid) else {
+            return;
+        };
+        for n in kids.iter() {
+            if out.len() >= limit {
+                return;
+            }
+            let indent = "  ".repeat(depth);
+            out.push(format!("{}{}", indent, n.content));
+            if n.is_display {
+                walk(by_parent, &n.id, depth + 1, out, limit);
+            }
+        }
+    }
+
+    let roots = root_container_ids(navs);
+    let mut out: Vec<String> = vec![];
+    if !roots.is_empty() {
+        for root_id in roots.iter() {
+            if out.len() >= limit {
+                break;
+            }
+            walk(&by_parent, root_id, 0, &mut out, limit);
+        }
+    }
+    out
+}
+
 fn collect_visible_preorder_ids(all: &[Nav]) -> Vec<String> {
     let root_container_parent_id = ROOT_CONTAINER_PARENT_ID;
 
@@ -1101,33 +1183,7 @@ pub fn OutlineEditor(
 
                 {move || {
                     let all = navs.get();
-                    let root_container_parent_id = ROOT_CONTAINER_PARENT_ID;
-
-                    // Backend schema: explicit ROOT container node has parid == all-zero.
-                    // Real top-level nodes are children of root container ids.
-                    let root_container_ids = all
-                        .iter()
-                        .filter(|n| !n.is_delete && n.parid == root_container_parent_id)
-                        .map(|n| n.id.clone())
-                        .collect::<std::collections::BTreeSet<_>>();
-
-                    let mut roots = if !root_container_ids.is_empty() {
-                        all.iter()
-                            .filter(|n| !n.is_delete && root_container_ids.contains(&n.parid))
-                            .cloned()
-                            .collect::<Vec<_>>()
-                    } else {
-                        // Defensive fallback: if backend/root data is malformed, avoid rendering
-                        // synthetic ROOT rows directly.
-                        all.iter()
-                            .filter(|n| !n.is_delete && n.parid == root_container_parent_id)
-                            .cloned()
-                            .collect::<Vec<_>>()
-                    };
-                    roots.sort_by(|a, b| a
-                        .same_deep_order
-                        .partial_cmp(&b.same_deep_order)
-                        .unwrap_or(std::cmp::Ordering::Equal));
+                    let roots = collect_visible_top_level_nodes(&all);
 
                     if roots.is_empty() {
                         // Intentionally render nothing here. Empty notes are auto-seeded with a first node,
@@ -1950,56 +2006,7 @@ pub fn OutlineNode(
 
                                                                                         match api_client.get_note_navs(&note_id).await {
                                                                                             Ok(navs) => {
-                                                                                                let root_container_parent_id = ROOT_CONTAINER_PARENT_ID;
-                                                                                                let mut by_parent: std::collections::HashMap<String, Vec<Nav>> =
-                                                                                                    std::collections::HashMap::new();
-                                                                                                for n in navs.into_iter() {
-                                                                                                    if n.is_delete {
-                                                                                                        continue;
-                                                                                                    }
-                                                                                                    by_parent.entry(n.parid.clone()).or_default().push(n);
-                                                                                                }
-                                                                                                for (_k, xs) in by_parent.iter_mut() {
-                                                                                                    xs.sort_by(|a, b| a
-                                                                                                        .same_deep_order
-                                                                                                        .partial_cmp(&b.same_deep_order)
-                                                                                                        .unwrap_or(std::cmp::Ordering::Equal));
-                                                                                                }
-
-                                                                                                let mut out: Vec<String> = vec![];
-                                                                                                fn walk(
-                                                                                                    by_parent: &std::collections::HashMap<String, Vec<Nav>>,
-                                                                                                    parid: &str,
-                                                                                                    depth: usize,
-                                                                                                    out: &mut Vec<String>,
-                                                                                                    limit: usize,
-                                                                                                ) {
-                                                                                                    if out.len() >= limit {
-                                                                                                        return;
-                                                                                                    }
-                                                                                                    let Some(kids) = by_parent.get(parid) else { return; };
-                                                                                                    for n in kids.iter() {
-                                                                                                        if out.len() >= limit {
-                                                                                                            return;
-                                                                                                        }
-                                                                                                        let indent = "  ".repeat(depth);
-                                                                                                        out.push(format!("{}{}", indent, n.content));
-                                                                                                        if n.is_display {
-                                                                                                            walk(by_parent, &n.id, depth + 1, out, limit);
-                                                                                                        }
-                                                                                                    }
-                                                                                                }
-                                                                                                // Skip synthetic ROOT container row itself in previews.
-                                                                                                // Root container has `parid == ROOT_CONTAINER_PARENT_ID`; we only render its children.
-                                                                                                if let Some(root_nodes) = by_parent.get(root_container_parent_id) {
-                                                                                                    for root in root_nodes.iter() {
-                                                                                                        if out.len() >= 8 {
-                                                                                                            break;
-                                                                                                        }
-                                                                                                        walk(&by_parent, &root.id, 0, &mut out, 8);
-                                                                                                    }
-                                                                                                }
-                                                                                                preview_lines.set(out);
+                                                                                                preview_lines.set(collect_preview_lines(&navs, 8));
                                                                                             }
                                                                                             Err(e) => {
                                                                                                 sync2.mark_backend_offline_api(&e);
@@ -3518,6 +3525,67 @@ mod editor_delete_behavior_tests {
         assert_eq!(outline_delete_state(false, 1), OutlineDeleteState::OnlySoftBreaks);
 
         assert_eq!(outline_delete_state(false, 0), OutlineDeleteState::Empty);
+    }
+
+    #[test]
+    fn test_visible_top_level_nodes_skip_root_container() {
+        let root_parent = ROOT_CONTAINER_PARENT_ID.to_string();
+        let note_id = "n1".to_string();
+
+        let root_container = Nav {
+            id: "root-container".to_string(),
+            note_id: note_id.clone(),
+            parid: root_parent.clone(),
+            same_deep_order: 0.0,
+            content: "ROOT".to_string(),
+            is_display: true,
+            is_delete: false,
+            properties: None,
+        };
+        let child = Nav {
+            id: "child-1".to_string(),
+            note_id: note_id.clone(),
+            parid: "root-container".to_string(),
+            same_deep_order: 1.0,
+            content: "Hello".to_string(),
+            is_display: true,
+            is_delete: false,
+            properties: None,
+        };
+
+        let out = collect_visible_top_level_nodes(&[root_container, child]);
+        let ids: Vec<String> = out.into_iter().map(|n| n.id).collect();
+        assert_eq!(ids, vec!["child-1".to_string()]);
+    }
+
+    #[test]
+    fn test_collect_preview_lines_skips_root_container_row() {
+        let root_parent = ROOT_CONTAINER_PARENT_ID.to_string();
+        let note_id = "n1".to_string();
+
+        let root_container = Nav {
+            id: "root-container".to_string(),
+            note_id: note_id.clone(),
+            parid: root_parent,
+            same_deep_order: 0.0,
+            content: "ROOT".to_string(),
+            is_display: true,
+            is_delete: false,
+            properties: None,
+        };
+        let child = Nav {
+            id: "child-1".to_string(),
+            note_id,
+            parid: "root-container".to_string(),
+            same_deep_order: 1.0,
+            content: "Hello".to_string(),
+            is_display: true,
+            is_delete: false,
+            properties: None,
+        };
+
+        let lines = collect_preview_lines(&[root_container, child], 8);
+        assert_eq!(lines, vec!["Hello".to_string()]);
     }
 
     #[test]
