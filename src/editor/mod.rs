@@ -1104,24 +1104,26 @@ pub fn OutlineEditor(
                     let root_container_parent_id = ROOT_CONTAINER_PARENT_ID;
 
                     // Backend schema: explicit ROOT container node has parid == all-zero.
-                    // Real top-level nodes have parid == root_container.id.
-                    let root_parid = {
-                        let root_candidates = all
-                            .iter()
-                            .filter(|n| n.parid == root_container_parent_id)
-                            .collect::<Vec<_>>();
-                        if root_candidates.len() == 1 {
-                            root_candidates[0].id.as_str()
-                        } else {
-                            root_container_parent_id
-                        }
-                    };
-
-                    let mut roots = all
+                    // Real top-level nodes are children of root container ids.
+                    let root_container_ids = all
                         .iter()
-                        .filter(|n| n.parid == root_parid)
-                        .cloned()
-                        .collect::<Vec<_>>();
+                        .filter(|n| !n.is_delete && n.parid == root_container_parent_id)
+                        .map(|n| n.id.clone())
+                        .collect::<std::collections::BTreeSet<_>>();
+
+                    let mut roots = if !root_container_ids.is_empty() {
+                        all.iter()
+                            .filter(|n| !n.is_delete && root_container_ids.contains(&n.parid))
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    } else {
+                        // Defensive fallback: if backend/root data is malformed, avoid rendering
+                        // synthetic ROOT rows directly.
+                        all.iter()
+                            .filter(|n| !n.is_delete && n.parid == root_container_parent_id)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    };
                     roots.sort_by(|a, b| a
                         .same_deep_order
                         .partial_cmp(&b.same_deep_order)
@@ -1987,7 +1989,16 @@ pub fn OutlineNode(
                                                                                                         }
                                                                                                     }
                                                                                                 }
-                                                                                                walk(&by_parent, root_container_parent_id, 0, &mut out, 8);
+                                                                                                // Skip synthetic ROOT container row itself in previews.
+                                                                                                // Root container has `parid == ROOT_CONTAINER_PARENT_ID`; we only render its children.
+                                                                                                if let Some(root_nodes) = by_parent.get(root_container_parent_id) {
+                                                                                                    for root in root_nodes.iter() {
+                                                                                                        if out.len() >= 8 {
+                                                                                                            break;
+                                                                                                        }
+                                                                                                        walk(&by_parent, &root.id, 0, &mut out, 8);
+                                                                                                    }
+                                                                                                }
                                                                                                 preview_lines.set(out);
                                                                                             }
                                                                                             Err(e) => {

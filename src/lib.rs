@@ -112,21 +112,21 @@ mod wasm_tests {
         // Also clear standard API/user storage keys.
         ApiClient::clear_storage();
 
-        // Title: local-first - draft always takes precedence if it has content.
+        // Title: local-first - unsynced draft takes precedence.
         touch_title(db_id, note_id, "t1");
         assert_eq!(get_title_override(db_id, note_id, "server"), "t1");
 
-        // After marking synced, draft still takes precedence (local-first).
+        // After marking synced, draft payload may be pruned; fallback to server value.
         mark_title_synced(db_id, note_id, i64::MAX);
-        assert_eq!(get_title_override(db_id, note_id, "server"), "t1");
+        assert_eq!(get_title_override(db_id, note_id, "server"), "server");
 
-        // Nav: local-first - draft always takes precedence if it has content.
+        // Nav: local-first - unsynced draft takes precedence.
         touch_nav(db_id, note_id, nav_id, "c1");
         assert_eq!(get_nav_override(db_id, note_id, nav_id, "sv"), "c1");
 
-        // After marking synced, nav draft still takes precedence (local-first).
+        // After marking synced, nav draft may be pruned; fallback to server value.
         mark_nav_synced(db_id, note_id, nav_id, i64::MAX);
-        assert_eq!(get_nav_override(db_id, note_id, nav_id, "sv"), "c1");
+        assert_eq!(get_nav_override(db_id, note_id, nav_id, "sv"), "sv");
 
         // Test with another nav to verify separate drafts.
         touch_nav(db_id, note_id, nav_id2, "c2");
