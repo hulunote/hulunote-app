@@ -32,5 +32,3 @@ node_modules/
 # Allow config files
 !tailwind.config.js
 
-# Cargo
-Cargo.lock

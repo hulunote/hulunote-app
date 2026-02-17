@@ -38,10 +38,10 @@ jobs:
         run: npm install -g tailwindcss
 
       - name: Build with Trunk
-        run: trunk build
+        run: trunk build --locked
 
       - name: Run tests (host)
-        run: cargo test
+        run: cargo test --locked
 
       # WASM tests are a separate suite from host tests. Run them in CI to avoid missing regressions.
       - name: Install wasm-bindgen-cli (includes wasm-bindgen-test-runner)
@@ -54,7 +54,7 @@ jobs:
         env:
           CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
           WASM_BINDGEN_TEST_TIMEOUT: '120'
-        run: cargo test --target wasm32-unknown-unknown
+        run: cargo test --locked --target wasm32-unknown-unknown
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
