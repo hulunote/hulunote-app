@@ -2334,7 +2334,8 @@ pub fn NotePage() -> impl IntoView {
                                             <div class="p-2">
                                                 <a
                                                     href=note_href
-                                                    class="block truncate text-sm font-medium hover:underline"
+                                                    class="inline-block max-w-full truncate text-sm font-medium hover:underline"
+                                                    title="Open note"
                                                 >
                                                     {note_title}
                                                 </a>
@@ -2407,21 +2408,23 @@ pub fn NotePage() -> impl IntoView {
                                                                 s
                                                             };
 
-                                                            let chain_display_for_show = chain_display.clone();
                                                             let content_display = content.trim().to_string();
+                                                            let line_text = if chain_display.is_empty() {
+                                                                content_display
+                                                            } else {
+                                                                format!("{} > {}", chain_display, content_display)
+                                                            };
+
                                                             view! {
-                                                                <a
-                                                                    href=href
-                                                                    class="block rounded-md border border-border/60 bg-background px-2 py-1 text-xs transition-colors hover:bg-surface-hover"
-                                                                >
-                                                                    <Show
-                                                                        when=move || !chain_display_for_show.is_empty()
-                                                                        fallback=|| ().into_view()
+                                                                <div class="rounded-md border border-border/60 bg-background px-2 py-1 text-xs">
+                                                                    <a
+                                                                        href=href
+                                                                        class="inline-block max-w-full truncate text-muted-foreground hover:underline"
+                                                                        title="Jump to this outline item"
                                                                     >
-                                                                        <div class="mb-1 truncate text-[11px] text-muted-foreground">{chain_display.clone()}</div>
-                                                                    </Show>
-                                                                    <span class="line-clamp-2 whitespace-pre-wrap text-muted-foreground">{content_display}</span>
-                                                                </a>
+                                                                        {line_text}
+                                                                    </a>
+                                                                </div>
                                                             }
                                                         })
                                                         .collect_view()}
