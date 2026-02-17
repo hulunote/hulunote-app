@@ -289,7 +289,7 @@ This client communicates with the hulunote backend API. See [API_REFERENCE.md](.
 5. Use [[link]] to create bidirectional links
    |
    v
-6. Save (auto-save)
+6. Save (local-first auto-save; backend sync is asynchronous)
 ```
 
 ### 6.4 Organize Information Flow
@@ -351,4 +351,69 @@ Configure the backend API URL in your client settings.
 
 - [Architecture](./ARCHITECTURE.md)
 - [API Contract](./API_REFERENCE.md)
-- [User Manual](./USER_MANUAL.md)
+
+---
+
+## 9. Interaction Semantics (Current Implementation)
+
+This section defines current user-facing editing behavior for the outline editor.
+It is written as product behavior (not implementation detail) and is intended to be testable.
+
+### 9.1 Core terms
+
+- **Database**: a workspace.
+- **Note**: a page within a database.
+- **Outline node (Nav)**: a bullet/line inside a note.
+  - Tree structure is defined by `parid`.
+  - Sibling ordering uses `same-deep-order`.
+  - Collapse state uses `is-display`.
+  - Deletion uses soft-delete (`is-delete`).
+
+### 9.2 Editing model
+
+- Click a node to enter inline edit mode.
+- On blur, edits are saved locally first; backend sync is asynchronous.
+- The product follows a local-first model (immediate UX, eventual backend convergence).
+
+### 9.3 Keyboard behavior
+
+#### Enter
+- Saves current node and creates the next sibling under the same parent.
+- New sibling order uses midpoint ordering:
+  - midpoint(current, next sibling), or
+  - current + 1.0 if no next sibling.
+- Focus moves into the newly created sibling.
+
+#### Tab / Shift+Tab
+- `Tab`: indent under previous visible sibling.
+  - If no previous visible sibling exists, no-op.
+  - New parent is expanded.
+  - Node is appended to the end of new parent children.
+  - Soft-deleted nodes are ignored when resolving previous sibling.
+- `Shift+Tab`: outdent to become sibling of current parent.
+  - Positioned immediately after parent in sibling order.
+
+#### Arrow keys
+- `ArrowUp` / `ArrowDown`: move between soft lines within a block.
+- At first/last line boundaries: jump to adjacent visible block.
+- Cross-block jumps preserve cursor column when possible.
+- `Cmd/Ctrl + ArrowUp/Down`: direct jump to adjacent block.
+- `ArrowLeft` at line start: move to previous sibling tail, or parent tail.
+- `ArrowRight` at line end: descend into first child (expand if collapsed).
+
+#### Alt/Option + ArrowUp/Down
+- Reorder within siblings only.
+- `parid` remains unchanged.
+- Only `same-deep-order` is updated.
+
+#### Backspace/Delete on empty node
+- Performs soft delete.
+- Node subtree is removed from local view immediately.
+- Backend receives `is-delete: true` asynchronously.
+- Focus moves to previous visible node, otherwise next visible node.
+
+### 9.4 Current limitations
+
+- Drag-and-drop reorder has no dedicated visual drop indicator yet.
+- Multi-line textarea/autosize editing is not implemented.
+- Advanced outline operations (merge/split, block references) are out of scope.

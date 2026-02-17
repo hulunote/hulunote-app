@@ -25,6 +25,14 @@ UI Layer → State Layer → Persistence (drafts) → Sync Layer → Backend Con
 4. **Soft delete is a tombstone**: set `is_delete: true` in meta draft, do NOT remove from drafts.
    - UI must filter `is_delete` in rendering and traversal.
 
+### Consistency Contract
+
+- The system is **local-first and eventually consistent**, not strongly consistent.
+- On input, draft state updates immediately; backend sync is asynchronous (debounce/retry/pagehide flush).
+- During sync, temporary divergence between UI/draft/backend is expected.
+- When network and backend are healthy, drafts must converge and be pruned after sync.
+- Product-level logic should rely on draft/UI state for immediate UX and treat backend state as eventually convergent.
+
 ## 2. Sync Controller Contract
 
 All note-related writes must flow through `NoteSyncController`:
@@ -60,5 +68,5 @@ impl NoteSyncController {
 ## 5. References
 
 - [API Contract](./API_REFERENCE.md)
-- [User Manual](./USER_MANUAL.md)
+- [Interaction Semantics](./PRODUCT.md#9-interaction-semantics-current-implementation)
 - [Leptos Guide](./LEPTOS_GUIDE.md)

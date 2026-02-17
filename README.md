@@ -116,7 +116,7 @@ hulunote-app/
 
 ## Documentation
 
-- [User Manual](./docs/USER_MANUAL.md)
+- [Interaction Semantics](./docs/PRODUCT.md#9-interaction-semantics-current-implementation)
 - [Product Overview](./docs/PRODUCT.md)
 - [API Contract](./docs/API_REFERENCE.md)
 - [Leptos Development Guide](./docs/LEPTOS_GUIDE.md)
