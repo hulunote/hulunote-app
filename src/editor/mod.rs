@@ -1618,7 +1618,7 @@ pub fn OutlineNode(
 
                 let has_kids = !kids.is_empty();
                 let marker_class = if has_kids {
-                    "absolute z-20 -left-[24px] top-1/2 -translate-y-1/2 h-7 w-7 inline-flex items-center justify-center text-muted-foreground/70 cursor-pointer opacity-0 transition-opacity duration-200 ease-out group-hover:opacity-100 group-focus-within:opacity-100 hover:text-foreground/90"
+                    "absolute z-20 -left-[24px] top-1/2 -translate-y-1/2 h-7 w-7 inline-flex items-center justify-center text-muted-foreground/70 cursor-pointer opacity-0 transition-opacity duration-200 ease-out group-hover:opacity-100 hover:text-foreground/90"
                 } else {
                     "-mt-0.5 h-5 w-5 inline-flex items-center justify-center text-muted-foreground"
                 };
@@ -1664,10 +1664,15 @@ pub fn OutlineNode(
                                     let nav_id_for_connector = nav_id_sv.get_value();
                                     let hide = hover_triangle_parent_nav_id.get().as_deref()
                                         == Some(nav_id_for_connector.as_str());
+                                    let is_active = editing_id.get().as_deref()
+                                        == Some(nav_id_for_connector.as_str());
+
                                     if hide {
                                         "pointer-events-none absolute top-1 bottom-px w-px bg-muted-foreground/65 opacity-0 transition-opacity duration-150 ease-out"
+                                    } else if is_active {
+                                        "pointer-events-none absolute top-1 bottom-px w-px bg-foreground/80 opacity-100 transition-[opacity,background-color] duration-150 ease-out"
                                     } else {
-                                        "pointer-events-none absolute top-1 bottom-px w-px bg-muted-foreground/65 opacity-100 transition-opacity duration-150 ease-out"
+                                        "pointer-events-none absolute top-1 bottom-px w-px bg-muted-foreground/65 opacity-100 transition-[opacity,background-color] duration-150 ease-out"
                                     }
                                 }
                                 style=move || format!("left: {}px", connector_left)
