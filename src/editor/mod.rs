@@ -1617,21 +1617,21 @@ pub fn OutlineNode(
 
                 let has_kids = !kids.is_empty();
                 let marker_class = if has_kids {
-                    "absolute -left-[26px] top-1/2 -translate-y-1/2 h-5 w-5 inline-flex items-center justify-center text-muted-foreground/70 cursor-pointer opacity-0 transition-opacity duration-200 ease-out group-hover:opacity-100 group-focus-within:opacity-100 hover:text-foreground/90"
+                    "absolute -left-[32px] top-1/2 -translate-y-1/2 h-7 w-7 inline-flex items-center justify-center text-muted-foreground/70 cursor-pointer opacity-0 transition-opacity duration-200 ease-out group-hover:opacity-100 group-focus-within:opacity-100 hover:text-foreground/90"
                 } else {
                     "-mt-0.5 h-5 w-5 inline-flex items-center justify-center text-muted-foreground"
                 };
                 let marker_view = if has_kids {
                     if n.is_display {
                         view! {
-                            <svg viewBox="0 0 20 20" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <svg viewBox="0 0 20 20" class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                                 <path d="M5 8l5 5 5-5"></path>
                             </svg>
                         }
                             .into_any()
                     } else {
                         view! {
-                            <svg viewBox="0 0 20 20" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <svg viewBox="0 0 20 20" class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                                 <path d="M8 5l5 5-5 5"></path>
                             </svg>
                         }
@@ -1639,7 +1639,7 @@ pub fn OutlineNode(
                     }
                 } else {
                     view! {
-                        <svg viewBox="0 0 20 20" class="h-2.5 w-2.5" fill="currentColor" aria-hidden="true">
+                        <svg viewBox="0 0 20 20" class="h-5 w-5" fill="currentColor" aria-hidden="true">
                             <circle cx="10" cy="10" r="3"></circle>
                         </svg>
                     }
@@ -1654,7 +1654,7 @@ pub fn OutlineNode(
                     );
                     // VSCode-style folding connector for expanded blocks.
                     // Align to the current nav's indentation guide column (same level as its bullet).
-                    let connector_left = (depth * 26 + 10) as i32;
+                    let connector_left = (depth * 26 + 16) as i32;
 
                     view! {
                         <div class="relative">
@@ -1664,9 +1664,9 @@ pub fn OutlineNode(
                                     let hide = hover_triangle_parent_nav_id.get().as_deref()
                                         == Some(nav_id_for_connector.as_str());
                                     if hide {
-                                        "pointer-events-none absolute top-2 bottom-px w-px bg-muted-foreground/65 opacity-0 transition-opacity duration-150 ease-out"
+                                        "pointer-events-none absolute top-1 bottom-px w-px bg-muted-foreground/65 opacity-0 transition-opacity duration-150 ease-out"
                                     } else {
-                                        "pointer-events-none absolute top-2 bottom-px w-px bg-muted-foreground/65 opacity-100 transition-opacity duration-150 ease-out"
+                                        "pointer-events-none absolute top-1 bottom-px w-px bg-muted-foreground/65 opacity-100 transition-opacity duration-150 ease-out"
                                     }
                                 }
                                 style=move || format!("left: {}px", connector_left)
@@ -1860,10 +1860,22 @@ pub fn OutlineNode(
                             >
                             {if has_kids {
                                 view! {
-                                    <div class="relative -mt-0.5 h-5 w-5 inline-flex items-center justify-center text-muted-foreground">
-                                        <svg viewBox="0 0 20 20" class="h-2.5 w-2.5" fill="currentColor" aria-hidden="true">
-                                            <circle cx="10" cy="10" r="3"></circle>
-                                        </svg>
+                                    <div class="relative self-start mt-0.5 h-8 w-8 inline-flex items-center justify-center text-muted-foreground">
+                                        {if n.is_display {
+                                            view! {
+                                                <svg viewBox="0 0 20 20" class="h-5 w-5" fill="currentColor" aria-hidden="true">
+                                                    <circle cx="10" cy="10" r="3"></circle>
+                                                </svg>
+                                            }
+                                            .into_any()
+                                        } else {
+                                            view! {
+                                                <svg viewBox="0 0 20 20" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                                                    <circle cx="10" cy="10" r="3"></circle>
+                                                </svg>
+                                            }
+                                            .into_any()
+                                        }}
 
                                         <button
                                             class=marker_class
@@ -1913,8 +1925,8 @@ pub fn OutlineNode(
                                 .into_any()
                             } else {
                                 view! {
-                                    <span class="-mt-0.5 h-5 w-5 inline-flex items-center justify-center text-muted-foreground">
-                                        <svg viewBox="0 0 20 20" class="h-2.5 w-2.5" fill="currentColor" aria-hidden="true">
+                                    <span class="self-start mt-0.5 h-8 w-8 inline-flex items-center justify-center text-muted-foreground">
+                                        <svg viewBox="0 0 20 20" class="h-5 w-5" fill="currentColor" aria-hidden="true">
                                             <circle cx="10" cy="10" r="3"></circle>
                                         </svg>
                                     </span>
@@ -1939,14 +1951,14 @@ pub fn OutlineNode(
                                         // Show placeholder text for empty nodes while keeping them clickable.
                                         let is_empty_display = content_now.trim().is_empty();
                                         let content_display = if is_empty_display {
-                                            "Click to edit..".to_string()
+                                            "".to_string()
                                         } else {
                                             content_now
                                         };
                                         let content_class = if is_empty_display {
-                                            "cursor-text whitespace-pre-wrap min-h-[28px] w-full min-w-0 flex-1 px-1 py-1 text-sm leading-6 rounded-md border border-transparent text-muted-foreground/70 italic"
+                                            "cursor-text whitespace-pre-wrap min-h-[22px] w-full min-w-0 flex-1 px-1 py-0.5 text-sm leading-5 rounded-md border border-transparent text-muted-foreground/70 italic"
                                         } else {
-                                            "cursor-text whitespace-pre-wrap min-h-[28px] w-full min-w-0 flex-1 px-1 py-1 text-sm leading-6 rounded-md border border-transparent"
+                                            "cursor-text whitespace-pre-wrap min-h-[22px] w-full min-w-0 flex-1 px-1 py-0.5 text-sm leading-5 rounded-md border border-transparent"
                                         };
 
                                         let id_for_click = nav_id_sv.get_value();
@@ -2538,7 +2550,7 @@ pub fn OutlineNode(
                                             attr:data-nav-id=nav_id_sv.get_value()
                                             attr:data-note-id=note_id_sv.get_value()
                                             style=format!("anchor-name: {}", ac_anchor_name_sv.get_value())
-                                            class="relative z-10 min-h-[28px] w-full min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1 py-1 text-sm leading-6 text-foreground caret-foreground outline-none whitespace-pre-wrap"
+                                            class="relative z-10 min-h-[22px] w-full min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1 py-0.5 text-sm leading-5 text-foreground caret-foreground outline-none whitespace-pre-wrap"
                                             on:input=move |ev: web_sys::Event| {
                                                 let Some(el) = ev
                                                     .target()
