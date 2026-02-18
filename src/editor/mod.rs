@@ -17,7 +17,7 @@ use leptos::html;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use wasm_bindgen::closure::Closure;
-use wasm_bindgen::JsCast;
+use wasm_bindgen::{JsCast, JsValue};
 
 mod interaction;
 mod ordering;
@@ -473,6 +473,57 @@ fn ce_set_caret_utf16(el: &web_sys::HtmlElement, pos_utf16: u32) {
             let _ = sel.add_range(&range);
         }
     }
+}
+
+fn ce_set_caret_from_client_point(el: &web_sys::HtmlElement, client_x: i32, client_y: i32) -> bool {
+    if !el.is_connected() {
+        return false;
+    }
+
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+        return false;
+    };
+
+    let doc_js: JsValue = doc.clone().into();
+    let Ok(fn_js) = js_sys::Reflect::get(&doc_js, &JsValue::from_str("caretRangeFromPoint")) else {
+        return false;
+    };
+    if !fn_js.is_function() {
+        return false;
+    }
+
+    let func: js_sys::Function = fn_js.unchecked_into();
+    let Ok(range_js) = func.call2(
+        &doc_js,
+        &JsValue::from_f64(client_x as f64),
+        &JsValue::from_f64(client_y as f64),
+    ) else {
+        return false;
+    };
+
+    if range_js.is_null() || range_js.is_undefined() {
+        return false;
+    }
+
+    let Ok(range) = range_js.dyn_into::<web_sys::Range>() else {
+        return false;
+    };
+
+    // Ensure the resolved caret belongs to the current editable node.
+    let Some(container) = range.start_container().ok() else {
+        return false;
+    };
+    let root: web_sys::Node = el.clone().unchecked_into();
+    if !root.contains(Some(&container)) {
+        return false;
+    }
+
+    let Ok(Some(sel)) = doc.get_selection() else {
+        return false;
+    };
+    let _ = sel.remove_all_ranges();
+    let _ = sel.add_range(&range);
+    true
 }
 
 fn ensure_titles_loaded(app_state: &AppContext, ac: &AutocompleteCtx) {
@@ -1842,7 +1893,7 @@ pub fn OutlineNode(
                                         return view! {
                                             <div
                                                 class=content_class
-                                                on:mousedown=move |_ev: web_sys::MouseEvent| {
+                                                on:mousedown=move |ev: web_sys::MouseEvent| {
                                                     // Use mousedown (not click) for single-click switching.
                                                     // IMPORTANT: don't rely on `blur` to save. When a focused input is
                                                     // unmounted by state updates, browsers may not fire blur reliably.
@@ -1886,12 +1937,16 @@ pub fn OutlineNode(
                                                     }
 
                                                     // Defer the actual switch so the current input can unmount cleanly.
+                                                    let click_x = ev.client_x();
+                                                    let click_y = ev.client_y();
+
                                                     let id = id_for_click.clone();
                                                     let next_value = content_for_click.clone();
                                                     let editing_id = editing_id;
                                                     let editing_value = editing_value;
                                                     let editing_snapshot = editing_snapshot;
                                                     let target_cursor_col = target_cursor_col;
+                                                    let editing_ref2 = editing_ref.clone();
 
                                                     let db_id = app_state.0.current_database_id.get_untracked().unwrap_or_default();
                                                     let note_id = note_id_sv.get_value();
@@ -1902,8 +1957,27 @@ pub fn OutlineNode(
                                                         editing_id.set(Some(id.clone()));
                                                         editing_value.set(restored.clone());
                                                         editing_snapshot.set(Some((id.clone(), restored.clone())));
-                                                        // Default caret position: end of content.
-                                                        target_cursor_col.set(Some(restored.encode_utf16().count() as u32));
+                                                        // Let the follow-up point-based placement decide caret position.
+                                                        target_cursor_col.set(None);
+
+                                                        let editing_ref3 = editing_ref2.clone();
+                                                        let click_x2 = click_x;
+                                                        let click_y2 = click_y;
+                                                        let target_cursor_col2 = target_cursor_col;
+                                                        let place = Closure::<dyn FnMut()>::new(move || {
+                                                            if let Some(el) = editing_ref3
+                                                                .get_untracked()
+                                                                .and_then(|n| n.dyn_into::<web_sys::HtmlElement>().ok())
+                                                            {
+                                                                let _ = ce_set_caret_from_client_point(&el, click_x2, click_y2);
+                                                                let (col, _end, _len) = ce_selection_utf16(&el);
+                                                                target_cursor_col2.set(Some(col));
+                                                            }
+                                                        });
+                                                        let _ = window().request_animation_frame(
+                                                            place.as_ref().unchecked_ref(),
+                                                        );
+                                                        place.forget();
                                                     });
                                                     let _ = window().request_animation_frame(
                                                         cb.as_ref().unchecked_ref(),
@@ -2474,6 +2548,27 @@ pub fn OutlineNode(
                                                 ac.ac_index.set(0);
                                                 ac.ac_open.set(true);
                                             }
+                                            on:focus=move |ev: web_sys::FocusEvent| {
+                                                let Some(el) = ev
+                                                    .current_target()
+                                                    .and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
+                                                else {
+                                                    return;
+                                                };
+
+                                                let Some(col) = target_cursor_col.get_untracked() else {
+                                                    return;
+                                                };
+
+                                                let el2 = el.clone();
+                                                let cb = Closure::<dyn FnMut()>::new(move || {
+                                                    ce_set_caret_utf16(&el2, col);
+                                                });
+                                                let _ = window().request_animation_frame(
+                                                    cb.as_ref().unchecked_ref(),
+                                                );
+                                                cb.forget();
+                                            }
                                             on:compositionstart=move |_ev: web_sys::CompositionEvent| {
                                                 is_composing.set(true);
                                             }
@@ -2523,6 +2618,10 @@ pub fn OutlineNode(
                                                         );
                                                         return;
                                                     };
+
+                                                    // Persist caret so window/tab switches can restore exact position.
+                                                    let (caret_col, _caret_end, _len_before) = ce_selection_utf16(&el);
+                                                    target_cursor_col.set(Some(caret_col));
 
                                                     // IMPORTANT: read the value from the contenteditable element.
                                                     let new_content = ce_text(&el);
