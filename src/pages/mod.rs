@@ -2156,6 +2156,11 @@ pub fn NotePage() -> impl IntoView {
             return;
         }
 
+        // Clear validation error once title becomes non-empty.
+        if error.get_untracked().is_some() {
+            error.set(None);
+        }
+
         // Avoid redundant saves when the user didn't change anything.
         if new_title == title_original.get_untracked() {
             return;
@@ -2203,6 +2208,11 @@ pub fn NotePage() -> impl IntoView {
                                 .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
                                 .map(|t| t.value())
                                 .unwrap_or_else(|| title_value.get_untracked());
+
+                            // Clear empty-title validation as soon as user types a non-empty title.
+                            if !v.trim().is_empty() && error.get_untracked().is_some() {
+                                error.set(None);
+                            }
 
                             // Write to draft immediately and schedule autosave (consistent with nav editing).
                             // Sync is handled by NoteSyncController (autosave + blur flush).
