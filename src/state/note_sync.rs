@@ -310,7 +310,14 @@ impl NoteSyncController {
                             app_state_notes.set(notes);
                         }
                     }
-                    Err(_) => {
+                    Err(e) => {
+                        leptos::logging::log!(
+                            "[sync:title] flush failed db_id={} note_id={} title_len={} err={}",
+                            db_id_clone,
+                            note_id_clone,
+                            title.value.len(),
+                            e
+                        );
                         mark_title_sync_failed(&db_id_clone, &note_id_clone);
                     }
                 }
@@ -521,7 +528,13 @@ impl NoteSyncController {
                     }
                     Err(e) => {
                         // Note: update_note_title returns String error, not ApiError.
-                        let _ = e;
+                        leptos::logging::log!(
+                            "[sync:title] retry failed db_id={} note_id={} title_len={} err={}",
+                            db_id,
+                            note_id,
+                            title_value.len(),
+                            e
+                        );
                         mark_title_sync_failed(&db_id, &note_id);
                     }
                 }
@@ -649,12 +662,22 @@ impl NoteSyncController {
                 let title_value = title.value.clone();
                 let updated_ms = title.updated_ms;
                 spawn_local(async move {
-                    if api_client
+                    match api_client
                         .update_note_title(&note_id_clone, &title_value)
                         .await
-                        .is_ok()
                     {
-                        mark_title_synced(&db_id_clone, &note_id_clone, updated_ms);
+                        Ok(_) => {
+                            mark_title_synced(&db_id_clone, &note_id_clone, updated_ms);
+                        }
+                        Err(e) => {
+                            leptos::logging::log!(
+                                "[sync:title] pagehide flush failed db_id={} note_id={} title_len={} err={}",
+                                db_id_clone,
+                                note_id_clone,
+                                title_value.len(),
+                                e
+                            );
+                        }
                     }
                 });
             }

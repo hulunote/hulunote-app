@@ -524,12 +524,13 @@ impl ApiClient {
     }
 
     pub async fn update_note_title(&self, note_id: &str, title: &str) -> Result<(), String> {
-        self.request::<()>(
-            "POST",
+        self.request_api::<serde_json::Value>(
             "/hulunote/update-hulunote-note",
             Some(&serde_json::json!({ "note-id": note_id, "title": title })),
         )
         .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
     }
 
     pub async fn delete_note_by_id(&self, note_id: &str) -> Result<(), String> {
