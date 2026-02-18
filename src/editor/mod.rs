@@ -140,6 +140,70 @@ enum OutlineDeleteState {
     Empty,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EnterBehavior {
+    SoftBreak,
+    SplitNav,
+}
+
+type EnterActionFlags = u8;
+const ENTER_FLAG_IS_ENTER_KEY: EnterActionFlags = 1 << 0;
+const ENTER_FLAG_SHIFT_PRESSED: EnterActionFlags = 1 << 1;
+const ENTER_FLAG_HAS_MULTILINE_CONTEXT: EnterActionFlags = 1 << 2;
+const ENTER_FLAG_CARET_ON_FIRST_LINE: EnterActionFlags = 1 << 3;
+
+fn has_flag(flags: EnterActionFlags, flag: EnterActionFlags) -> bool {
+    (flags & flag) != 0
+}
+
+fn resolve_nav_enter_action(flags: EnterActionFlags) -> Option<EnterBehavior> {
+    if !has_flag(flags, ENTER_FLAG_IS_ENTER_KEY) {
+        return None;
+    }
+
+    if has_flag(flags, ENTER_FLAG_SHIFT_PRESSED) {
+        return Some(EnterBehavior::SoftBreak);
+    }
+
+    let has_multiline_context = has_flag(flags, ENTER_FLAG_HAS_MULTILINE_CONTEXT);
+    let caret_on_first_line = has_flag(flags, ENTER_FLAG_CARET_ON_FIRST_LINE);
+
+    if has_multiline_context && !caret_on_first_line {
+        Some(EnterBehavior::SoftBreak)
+    } else {
+        Some(EnterBehavior::SplitNav)
+    }
+}
+
+fn split_nav_content_for_enter(current_content: &str, caret_utf16: u32) -> (String, String) {
+    // In multi-line navs, splitting by Enter should only cut within
+    // the first line when caret is on the first line.
+    // Keep lower lines in the current nav instead of moving them
+    // to the new sibling nav.
+    if let Some(first_nl_byte) = current_content.find('\n') {
+        let first_nl_utf16 = byte_idx_to_utf16(current_content, first_nl_byte);
+        if caret_utf16 <= first_nl_utf16 {
+            let first_line = &current_content[..first_nl_byte];
+            let rest_lines = &current_content[(first_nl_byte + 1)..];
+            let first_line_len = first_line.encode_utf16().count() as u32;
+            let split_pos = caret_utf16.min(first_line_len);
+            let split_byte = utf16_to_byte_idx(first_line, split_pos);
+
+            let left_first = &first_line[..split_byte.min(first_line.len())];
+            let right_first = &first_line[split_byte.min(first_line.len())..];
+
+            let left = if rest_lines.is_empty() {
+                left_first.to_string()
+            } else {
+                format!("{}\n{}", left_first, rest_lines)
+            };
+            return (left, right_first.to_string());
+        }
+    }
+
+    split_at_utf16(current_content, caret_utf16)
+}
+
 fn has_any_text_content(s: &str) -> bool {
     // Treat some invisible/bogus chars that browsers may inject into contenteditable
     // (to keep caret positions) as non-content.
@@ -3485,25 +3549,12 @@ pub fn OutlineNode(
                                                     return;
                                                 }
 
-                                                // Shift+Enter: allow entering multi-line mode from first-line editing.
-                                                // After multi-line exists, plain Enter handles in-node line breaks.
-                                                if key == "Enter" && ev.shift_key() {
-                                                    return;
-                                                }
-
-                                                // After the first soft line break exists in this nav,
-                                                // plain Enter should continue as a browser-native soft line break
-                                                // (caret movement + DOM mutation handled by contenteditable).
-                                                // Use both DOM semantic `<br>` count and textual `\n` as signals,
-                                                // because browser/contenteditable normalization may vary.
+                                                // Enter behavior policy: soft line break vs split nav.
                                                 let (total_lines, is_first_line) = input()
                                                     .as_ref()
                                                     .map(|el| {
                                                         // First-line detection based on caret byte position relative to
                                                         // the first newline in plain text.
-                                                        // - no '\n' => first line
-                                                        // - caret <= first '\n' => first line
-                                                        // - caret > first '\n' => not first line
                                                         let txt = ce_text(el);
                                                         let (caret_start, _caret_end, _len) = ce_selection_utf16(el);
                                                         let caret_byte = utf16_to_byte_idx(&txt, caret_start).min(txt.len());
@@ -3517,23 +3568,33 @@ pub fn OutlineNode(
                                                     })
                                                     .unwrap_or((1, true));
 
-                                                // In multi-line soft-enter mode, plain Enter keeps soft line breaks
-                                                // except when caret is back on the first line: then Enter should
-                                                // restore the default behavior (split/create next nav).
                                                 let has_soft_break_context =
                                                     semantic_br_count > 0
                                                         || v_now.contains('\n')
                                                         || total_lines > 1;
-                                                if key == "Enter"
-                                                    && !ev.shift_key()
-                                                    && has_soft_break_context
-                                                    && !is_first_line
-                                                {
+
+                                                let mut enter_flags: EnterActionFlags = 0;
+                                                if key == "Enter" {
+                                                    enter_flags |= ENTER_FLAG_IS_ENTER_KEY;
+                                                }
+                                                if ev.shift_key() {
+                                                    enter_flags |= ENTER_FLAG_SHIFT_PRESSED;
+                                                }
+                                                if has_soft_break_context {
+                                                    enter_flags |= ENTER_FLAG_HAS_MULTILINE_CONTEXT;
+                                                }
+                                                if is_first_line {
+                                                    enter_flags |= ENTER_FLAG_CARET_ON_FIRST_LINE;
+                                                }
+
+                                                let enter_behavior = resolve_nav_enter_action(enter_flags);
+
+                                                if enter_behavior == Some(EnterBehavior::SoftBreak) {
                                                     return;
                                                 }
 
                                                 // Enter: split at caret + create next sibling with trailing text.
-                                                if key == "Enter" {
+                                                if enter_behavior == Some(EnterBehavior::SplitNav) {
                                                     ev.prevent_default();
 
                                                     let nav_id_now = nav_id_sv.get_value();
@@ -3551,34 +3612,8 @@ pub fn OutlineNode(
                                                         (txt, caret)
                                                     };
 
-                                                    // In multi-line navs, splitting by Enter should only cut within
-                                                    // the first line when caret is on the first line.
-                                                    // Keep lower lines in the current nav instead of moving them
-                                                    // to the new sibling nav.
-                                                    let (left_content, right_content) = if let Some(first_nl_byte) = current_content.find('\n') {
-                                                        let first_nl_utf16 = byte_idx_to_utf16(&current_content, first_nl_byte);
-                                                        if caret_utf16 <= first_nl_utf16 {
-                                                            let first_line = &current_content[..first_nl_byte];
-                                                            let rest_lines = &current_content[(first_nl_byte + 1)..];
-                                                            let first_line_len = first_line.encode_utf16().count() as u32;
-                                                            let split_pos = caret_utf16.min(first_line_len);
-                                                            let split_byte = utf16_to_byte_idx(first_line, split_pos);
-
-                                                            let left_first = &first_line[..split_byte.min(first_line.len())];
-                                                            let right_first = &first_line[split_byte.min(first_line.len())..];
-
-                                                            let left = if rest_lines.is_empty() {
-                                                                left_first.to_string()
-                                                            } else {
-                                                                format!("{}\n{}", left_first, rest_lines)
-                                                            };
-                                                            (left, right_first.to_string())
-                                                        } else {
-                                                            split_at_utf16(&current_content, caret_utf16)
-                                                        }
-                                                    } else {
-                                                        split_at_utf16(&current_content, caret_utf16)
-                                                    };
+                                                    let (left_content, right_content) =
+                                                        split_nav_content_for_enter(&current_content, caret_utf16);
 
                                                     navs.update(|xs| {
                                                         if let Some(x) = xs.iter_mut().find(|x| x.id == nav_id_now) {
@@ -4130,6 +4165,57 @@ mod editor_delete_behavior_tests {
         let ids: Vec<String> = merged.into_iter().map(|n| n.id).collect();
 
         assert_eq!(ids, vec!["aa".to_string(), "cc".to_string()]);
+    }
+
+    fn enter_input(flags: &[EnterActionFlags]) -> EnterActionFlags {
+        flags.iter().copied().fold(0, |acc, f| acc | f)
+    }
+
+    #[test]
+    fn test_resolve_nav_enter_action_shift_enter_soft_break() {
+        let b = resolve_nav_enter_action(enter_input(&[
+            ENTER_FLAG_IS_ENTER_KEY,
+            ENTER_FLAG_SHIFT_PRESSED,
+            ENTER_FLAG_CARET_ON_FIRST_LINE,
+        ]));
+        assert_eq!(b, Some(EnterBehavior::SoftBreak));
+    }
+
+    #[test]
+    fn test_resolve_nav_enter_action_non_first_line_soft_break() {
+        let b = resolve_nav_enter_action(enter_input(&[
+            ENTER_FLAG_IS_ENTER_KEY,
+            ENTER_FLAG_HAS_MULTILINE_CONTEXT,
+        ]));
+        assert_eq!(b, Some(EnterBehavior::SoftBreak));
+    }
+
+    #[test]
+    fn test_resolve_nav_enter_action_first_line_split_nav() {
+        let b = resolve_nav_enter_action(enter_input(&[
+            ENTER_FLAG_IS_ENTER_KEY,
+            ENTER_FLAG_HAS_MULTILINE_CONTEXT,
+            ENTER_FLAG_CARET_ON_FIRST_LINE,
+        ]));
+        assert_eq!(b, Some(EnterBehavior::SplitNav));
+    }
+
+    #[test]
+    fn test_split_nav_content_for_enter_keeps_lower_lines_on_first_line_split() {
+        let src = "abc\nline2\nline3";
+        // caret after "a" in first line
+        let (left, right) = split_nav_content_for_enter(src, 1);
+        assert_eq!(left, "a\nline2\nline3");
+        assert_eq!(right, "bc");
+    }
+
+    #[test]
+    fn test_split_nav_content_for_enter_second_line_keeps_default_split() {
+        let src = "abc\nline2\nline3";
+        // caret in second line after "li" -> UTF-16 pos: 3 + 1 + 2 = 6
+        let (left, right) = split_nav_content_for_enter(src, 6);
+        assert_eq!(left, "abc\nli");
+        assert_eq!(right, "ne2\nline3");
     }
 
     #[test]
