@@ -647,10 +647,20 @@ fn ensure_titles_loaded(app_state: &AppContext, ac: &AutocompleteCtx) {
 
 fn root_container_ids(all: &[Nav]) -> std::collections::BTreeSet<String> {
     let root_container_parent_id = ROOT_CONTAINER_PARENT_ID;
-    all.iter()
-        .filter(|n| !n.is_delete && n.parid == root_container_parent_id)
+    let roots: std::collections::BTreeSet<String> = all
+        .iter()
+        .filter(|n| n.parid == root_container_parent_id)
         .map(|n| n.id.clone())
-        .collect()
+        .collect();
+
+    if roots.len() > 1 {
+        leptos::logging::error!(
+            "invalid note nav tree: expected <=1 root container under ROOT_CONTAINER_PARENT_ID, got {}. using all as fallback.",
+            roots.len()
+        );
+    }
+
+    roots
 }
 
 fn collect_visible_top_level_nodes(all: &[Nav]) -> Vec<Nav> {
@@ -731,8 +741,6 @@ fn collect_preview_lines(navs: &[Nav], limit: usize) -> Vec<String> {
 }
 
 fn collect_visible_preorder_ids(all: &[Nav]) -> Vec<String> {
-    let root_container_parent_id = ROOT_CONTAINER_PARENT_ID;
-
     fn children_sorted(all: &[Nav], parid: &str) -> Vec<Nav> {
         let mut out = all
             .iter()
@@ -757,7 +765,14 @@ fn collect_visible_preorder_ids(all: &[Nav]) -> Vec<String> {
     }
 
     let mut out: Vec<String> = vec![];
-    collect(all, root_container_parent_id, &mut out);
+
+    // Keep keyboard traversal strictly aligned with rendered top-level rows.
+    for n in collect_visible_top_level_nodes(all) {
+        out.push(n.id.clone());
+        if n.is_display {
+            collect(all, &n.id, &mut out);
+        }
+    }
     out
 }
 
@@ -3061,8 +3076,8 @@ pub fn OutlineNode(
                                                         };
 
                                                         let next_id = if key == "ArrowUp" {
-                                                            // ArrowUp at first editable block (idx <= 1, where visible[0] is ROOT container) should not jump
-                                                            if idx <= 1 {
+                                                            // ArrowUp at first visible editable block should not jump further.
+                                                            if idx == 0 {
                                                                 None
                                                             } else { Some(visible[idx - 1].clone()) }
                                                         } else {
@@ -3930,7 +3945,7 @@ mod editor_delete_behavior_tests {
         let ids = collect_visible_preorder_ids(&all);
 
         // Deleted node is excluded; children of visible nodes are included.
-        assert_eq!(ids, vec!["a".to_string(), "c".to_string()]);
+        assert_eq!(ids, vec!["c".to_string()]);
     }
 
     #[test]
@@ -4088,6 +4103,76 @@ mod editor_delete_behavior_tests {
         let all = vec![root_container, first, parent, child];
 
         assert!(!can_soft_delete_empty_nav(&all, "parent"));
+    }
+
+    #[test]
+    fn test_root_container_ids_returns_all_when_multiple_root_candidates_exist() {
+        let root_parent = ROOT_CONTAINER_PARENT_ID.to_string();
+        let note_id = "n1".to_string();
+
+        let root_a = Nav {
+            id: "root-a".to_string(),
+            note_id: note_id.clone(),
+            parid: root_parent.clone(),
+            same_deep_order: 0.0,
+            content: "ROOT A".to_string(),
+            is_display: true,
+            is_delete: false,
+            properties: None,
+        };
+        let root_b = Nav {
+            id: "root-b".to_string(),
+            note_id,
+            parid: root_parent,
+            same_deep_order: 1.0,
+            content: "ROOT B".to_string(),
+            is_display: true,
+            is_delete: false,
+            properties: None,
+        };
+
+        let ids = root_container_ids(&[root_a, root_b]);
+        assert!(ids.len() == 2);
+    }
+
+    #[test]
+    fn test_visible_preorder_ids_skip_root_container_row() {
+        let root_parent = ROOT_CONTAINER_PARENT_ID.to_string();
+        let note_id = "n1".to_string();
+
+        let root_container = Nav {
+            id: "root-container".to_string(),
+            note_id: note_id.clone(),
+            parid: root_parent,
+            same_deep_order: 0.0,
+            content: "ROOT".to_string(),
+            is_display: true,
+            is_delete: false,
+            properties: None,
+        };
+        let top = Nav {
+            id: "top-1".to_string(),
+            note_id: note_id.clone(),
+            parid: "root-container".to_string(),
+            same_deep_order: 1.0,
+            content: "Top".to_string(),
+            is_display: true,
+            is_delete: false,
+            properties: None,
+        };
+        let child = Nav {
+            id: "child-1".to_string(),
+            note_id,
+            parid: "top-1".to_string(),
+            same_deep_order: 1.0,
+            content: "Child".to_string(),
+            is_display: true,
+            is_delete: false,
+            properties: None,
+        };
+
+        let ids = collect_visible_preorder_ids(&[root_container, top, child]);
+        assert_eq!(ids, vec!["top-1".to_string(), "child-1".to_string()]);
     }
 
     #[test]
