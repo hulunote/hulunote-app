@@ -3002,7 +3002,19 @@ pub fn OutlineNode(
                                                                 editing_snapshot.set(Some((next_id, next_nav.content.clone())));
                                                             }
                                                         } else {
+                                                            // Reached boundary (no previous/next visible nav):
+                                                            // keep caret in current nav and move to line start/end.
                                                             ev.prevent_default();
+                                                            let target_pos = if key == "ArrowUp" {
+                                                                // At top boundary: move to current line start.
+                                                                utf16_pos_for_line_col(&current_text, current_line, 0)
+                                                            } else {
+                                                                // At bottom boundary: move to current line end.
+                                                                utf16_pos_for_line_col(&current_text, current_line, u32::MAX)
+                                                            };
+                                                            ce_set_caret_utf16(&input_el, target_pos);
+                                                            let (_line, col) = utf16_line_col_at_pos(&current_text, target_pos);
+                                                            target_cursor_col.set(Some(col));
                                                         }
                                                         return;
                                                     }
