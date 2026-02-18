@@ -1602,15 +1602,15 @@ pub fn OutlineNode(
                                     let is_drag_over = drag_over_nav_id.get().as_deref() == Some(id.as_str());
 
                                     if is_editing {
-                                        "group outline-row outline-row--editing -ml-10 pl-10 flex items-center gap-0.5 py-0.5"
+                                        "group outline-row outline-row--editing -ml-10 pl-10 flex items-center gap-0.5 py-0"
                                     } else if is_dragging && is_drag_source {
                                         // Make the dragged row semi-transparent (keep content visible).
-                                        "group outline-row -ml-10 pl-10 flex items-center gap-0.5 py-0.5 rounded-md bg-muted/30 opacity-40"
+                                        "group outline-row -ml-10 pl-10 flex items-center gap-0.5 py-0 rounded-md bg-muted/30 opacity-40"
                                     } else if is_dragging && is_drag_over {
                                         // Highlight drop target only while dragging.
-                                        "group outline-row -ml-10 pl-10 flex items-center gap-0.5 py-0.5 rounded-md bg-muted ring-1 ring-ring/40"
+                                        "group outline-row -ml-10 pl-10 flex items-center gap-0.5 py-0 rounded-md bg-muted ring-1 ring-ring/40"
                                     } else {
-                                        "group outline-row -ml-10 pl-10 flex items-center gap-0.5 py-0.5"
+                                        "group outline-row -ml-10 pl-10 flex items-center gap-0.5 py-0"
                                     }
                                 }
                                 // Drag is started from the bullet/triangle only (button below).
