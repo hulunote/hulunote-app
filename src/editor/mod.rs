@@ -922,6 +922,8 @@ pub fn OutlineEditor(
     // Drag state (for highlighting drop targets only while dragging).
     let dragging_nav_id: RwSignal<Option<String>> = RwSignal::new(None);
     let drag_over_nav_id: RwSignal<Option<String>> = RwSignal::new(None);
+    // Parent nav id whose direct connector should fade while hovering a child's fold triangle.
+    let hover_triangle_parent_nav_id: RwSignal<Option<String>> = RwSignal::new(None);
 
     let target_cursor_col: RwSignal<Option<u32>> = RwSignal::new(None);
     let editing_ref: NodeRef<html::Div> = NodeRef::new();
@@ -1280,6 +1282,7 @@ pub fn OutlineEditor(
                                                 target_cursor_col=target_cursor_col
                                                 editing_ref=editing_ref
                                                 focused_nav_id=focused_nav_id
+                                                hover_triangle_parent_nav_id=hover_triangle_parent_nav_id
                                             />
                                         }
                                     }
@@ -1308,6 +1311,7 @@ pub fn OutlineNode(
     target_cursor_col: RwSignal<Option<u32>>,
     editing_ref: NodeRef<html::Div>,
     focused_nav_id: RwSignal<Option<String>>,
+    hover_triangle_parent_nav_id: RwSignal<Option<String>>,
 ) -> impl IntoView {
     let app_state = expect_context::<AppContext>();
     let sync_sv = StoredValue::new(expect_context::<NoteSyncController>());
@@ -1540,7 +1544,16 @@ pub fn OutlineNode(
                     view! {
                         <div class="relative">
                             <div
-                                class="pointer-events-none absolute top-2 bottom-px w-px bg-muted-foreground/65"
+                                class=move || {
+                                    let nav_id_for_connector = nav_id_sv.get_value();
+                                    let hide = hover_triangle_parent_nav_id.get().as_deref()
+                                        == Some(nav_id_for_connector.as_str());
+                                    if hide {
+                                        "pointer-events-none absolute top-2 bottom-px w-px bg-muted-foreground/65 opacity-0 transition-opacity duration-150 ease-out"
+                                    } else {
+                                        "pointer-events-none absolute top-2 bottom-px w-px bg-muted-foreground/65 opacity-100 transition-opacity duration-150 ease-out"
+                                    }
+                                }
                                 style=move || format!("left: {}px", connector_left)
                             ></div>
                             <For
@@ -1562,6 +1575,7 @@ pub fn OutlineNode(
                                             target_cursor_col=target_cursor_col
                                             editing_ref=editing_ref
                                             focused_nav_id=focused_nav_id
+                                            hover_triangle_parent_nav_id=hover_triangle_parent_nav_id
                                         />
                                     }
                                 }
@@ -1600,6 +1614,24 @@ pub fn OutlineNode(
                                     }
                                 }
                                 // Drag is started from the bullet/triangle only (button below).
+                                on:mouseenter=move |_ev: web_sys::MouseEvent| {
+                                    if !has_kids {
+                                        return;
+                                    }
+                                    let id = nav_id_sv.get_value();
+                                    let parent = navs
+                                        .get_untracked()
+                                        .into_iter()
+                                        .find(|x| x.id == id)
+                                        .map(|x| x.parid)
+                                        .unwrap_or_default();
+                                    if !parent.trim().is_empty() {
+                                        hover_triangle_parent_nav_id.set(Some(parent));
+                                    }
+                                }
+                                on:mouseleave=move |_ev: web_sys::MouseEvent| {
+                                    hover_triangle_parent_nav_id.set(None);
+                                }
                                 on:dragenter=move |ev: web_sys::DragEvent| {
                                     let target_id = nav_id_sv.get_value();
                                     let dragged_id = dragging_nav_id.get_untracked().unwrap_or_default();
