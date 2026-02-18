@@ -1,10 +1,10 @@
 use crate::linking::extract_bidirectional_links;
-use crate::note_persistence::load_note_snapshot;
+use crate::drafts::load_note_snapshot;
 use crate::components::ui::{
     Alert, AlertDescription, Button, ButtonSize, ButtonVariant, Card, CardContent, CardDescription,
     CardHeader, CardTitle, Input, Label, Spinner,
 };
-use crate::note_persistence::get_title_override;
+use crate::drafts::get_title_override;
 use crate::editor::OutlineEditor;
 use crate::models::Nav;
 use crate::state::{AppContext, DbUiActions};
@@ -2088,7 +2088,7 @@ pub fn NotePage() -> impl IntoView {
         }
 
         // Load draft from localStorage; use if exists.
-        let draft = crate::note_persistence::load_note_draft(&db, &id);
+        let draft = crate::drafts::load_note_draft(&db, &id);
         let draft_title = draft.title.map(|f| f.value).unwrap_or_default();
 
         if !draft_title.is_empty() {

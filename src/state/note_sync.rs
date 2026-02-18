@@ -1,5 +1,5 @@
 use crate::api::CreateOrUpdateNavRequest;
-use crate::note_persistence::{
+use crate::drafts::{
     get_due_unsynced_nav_drafts, get_due_unsynced_nav_meta_drafts, get_unsynced_nav_drafts,
     list_dirty_notes, mark_nav_meta_sync_failed, mark_nav_meta_synced, mark_nav_sync_failed,
     mark_nav_synced, mark_title_sync_failed, mark_title_synced, touch_nav, touch_nav_meta,
@@ -201,7 +201,7 @@ impl NoteSyncController {
         navs.push(nav.clone());
 
         // Persist snapshot so refresh won't drop it.
-        crate::note_persistence::save_note_snapshot(
+        crate::drafts::save_note_snapshot(
             db_id,
             note_id,
             note_title,
@@ -210,8 +210,8 @@ impl NoteSyncController {
         );
 
         // Persist drafts so sync worker can create it on backend when online.
-        crate::note_persistence::touch_nav(db_id, note_id, &nav_id, initial_content);
-        crate::note_persistence::touch_nav_meta(db_id, note_id, &nav);
+        crate::drafts::touch_nav(db_id, note_id, &nav_id, initial_content);
+        crate::drafts::touch_nav_meta(db_id, note_id, &nav);
 
         Some(nav_id)
     }
@@ -286,7 +286,7 @@ impl NoteSyncController {
             let (db_id, note_id_for_title) = (db_id.to_string(), note_id_for_title.to_string());
 
             // Flush title - read from note draft's title field.
-            let draft = crate::note_persistence::load_note_draft(&db_id, &note_id_for_title);
+            let draft = crate::drafts::load_note_draft(&db_id, &note_id_for_title);
             let Some(title) = draft.title else {
                 return;
             };
@@ -464,7 +464,7 @@ impl NoteSyncController {
 
         for (db_id, note_id) in candidates.into_iter() {
             // title (limit to one per tick, but do not block nav/meta retries)
-            let draft = crate::note_persistence::load_note_draft(&db_id, &note_id);
+            let draft = crate::drafts::load_note_draft(&db_id, &note_id);
             if picked_title.is_empty() {
                 if let Some(title) = draft.title {
                     if title.updated_ms > title.synced_ms && title.next_retry_ms <= now {
@@ -640,7 +640,7 @@ impl NoteSyncController {
         };
 
         // Flush title draft.
-        let draft = crate::note_persistence::load_note_draft(&db_id, &note_id);
+        let draft = crate::drafts::load_note_draft(&db_id, &note_id);
         if let Some(title) = draft.title {
             if title.updated_ms > title.synced_ms {
                 let api_client = self.app_state.0.api_client.get_untracked();

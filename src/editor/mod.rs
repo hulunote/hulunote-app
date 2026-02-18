@@ -4,10 +4,10 @@ use crate::linking::{
     extract_bidirectional_links, normalize_outline_page_title, parse_bidirectional_tokens,
     BidirectionalToken,
 };
-use crate::note_persistence::{load_note_snapshot, save_note_snapshot};
+use crate::drafts::{load_note_snapshot, save_note_snapshot};
 use crate::components::hooks::use_random::use_random_id_for;
 use crate::components::ui::{Command, CommandItem, CommandList, Spinner};
-use crate::note_persistence::{apply_nav_meta_overrides, get_nav_override, get_pending_nav_ids};
+use crate::drafts::{apply_nav_meta_overrides, get_nav_override, get_pending_nav_ids};
 use crate::models::{Nav, Note};
 use crate::state::AppContext;
 use crate::state::NoteSyncController;
@@ -3274,7 +3274,7 @@ pub fn OutlineNode(
 
                                                     // Local-first tombstones: keep a meta draft with is_delete=true so
                                                     // refresh can re-apply the local delete over the server list.
-                                                    crate::note_persistence::mark_navs_deleted_in_snapshot(
+                                                    crate::drafts::mark_navs_deleted_in_snapshot(
                                                         &db_id_now,
                                                         &note_id_now,
                                                         &subtree,

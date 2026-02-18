@@ -15,19 +15,6 @@ Instead, it provides a CLI and a component schema to **generate and distribute c
 
 > Note: `node_modules/` is intentionally ignored by git.
 
-## Source layout (app modules)
-
-- `src/lib.rs` — entrypoint; mounts `App` and hosts tests
-- `src/app/` — App component + routing
-- `src/state/` — `AppState` + context wiring
-- `src/api/` — `ApiClient` + request/response models
-- `src/models/` — core data models (Database, Note, Nav, AccountInfo, etc.)
-- `src/pages/` — page components (Login, Registration, Home, Note, Search, Settings, etc.)
-- `src/editor/` — outline editor + helpers
-- `src/wiki/` — bidirectional link parsing helpers
-- `src/storage/` — localStorage helpers + recents
-- `src/util/` — time/date helpers
-
 ## CLI installation
 
 ```bash

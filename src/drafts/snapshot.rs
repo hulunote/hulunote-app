@@ -54,6 +54,17 @@ pub(crate) fn load_note_snapshot(db_id: &str, note_id: &str) -> Option<NoteSnaps
 ///
 /// This is used for local-first behavior: if a user deletes a node and refreshes before
 /// the backend sync completes, the snapshot should still reflect the local tombstone.
+fn apply_snapshot_tombstones(navs: &mut [Nav], ids: &[String]) -> bool {
+    let mut changed = false;
+    for n in navs.iter_mut() {
+        if ids.iter().any(|id| id == &n.id) && !n.is_delete {
+            n.is_delete = true;
+            changed = true;
+        }
+    }
+    changed
+}
+
 pub(crate) fn mark_navs_deleted_in_snapshot(db_id: &str, note_id: &str, ids: &[String]) {
     if db_id.trim().is_empty() || note_id.trim().is_empty() || ids.is_empty() {
         return;
@@ -63,17 +74,48 @@ pub(crate) fn mark_navs_deleted_in_snapshot(db_id: &str, note_id: &str, ids: &[S
         return;
     };
 
-    let mut changed = false;
-    for n in snap.navs.iter_mut() {
-        if ids.iter().any(|id| id == &n.id) {
-            if !n.is_delete {
-                n.is_delete = true;
-                changed = true;
-            }
+    if apply_snapshot_tombstones(&mut snap.navs, ids) {
+        save_note_snapshot(db_id, note_id, snap.title, snap.navs, snap.saved_ms);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn nav(id: &str, deleted: bool) -> Nav {
+        Nav {
+            id: id.to_string(),
+            note_id: "n1".to_string(),
+            parid: "root".to_string(),
+            same_deep_order: 0.0,
+            content: String::new(),
+            is_display: true,
+            is_delete: deleted,
+            properties: None,
         }
     }
 
-    if changed {
-        save_note_snapshot(db_id, note_id, snap.title, snap.navs, snap.saved_ms);
+    #[test]
+    fn test_apply_snapshot_tombstones_marks_only_targets() {
+        let mut navs = vec![nav("a", false), nav("b", false), nav("c", true)];
+        let ids = vec!["b".to_string(), "c".to_string()];
+
+        let changed = apply_snapshot_tombstones(&mut navs, &ids);
+
+        assert!(changed);
+        assert!(!navs[0].is_delete);
+        assert!(navs[1].is_delete);
+        assert!(navs[2].is_delete);
+    }
+
+    #[test]
+    fn test_apply_snapshot_tombstones_noop_when_already_deleted() {
+        let mut navs = vec![nav("a", true)];
+        let ids = vec!["a".to_string()];
+
+        let changed = apply_snapshot_tombstones(&mut navs, &ids);
+
+        assert!(!changed);
     }
 }

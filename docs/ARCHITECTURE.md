@@ -9,8 +9,8 @@ UI Layer → State Layer → Persistence (drafts) → Sync Layer → Backend Con
 ```
 
 - **UI Layer** (`src/pages/*`, `src/editor/*`): renders, collects user input.
-- **State Layer** (`src/state::AppState`): global reactive cache (databases, notes, user).
-- **Persistence** (`src/drafts/*`): **source of truth** for unsynced edits. Write immediately on input.
+- **State Layer** (`src/state/app_state.rs` + `src/state/note_sync.rs`): global reactive state + sync orchestration.
+- **Persistence** (`src/drafts/*`): local-first persistence (unsynced drafts + note snapshots).
 - **Sync Layer** (`NoteSyncController`): debounce, retry, online/pagehide listeners. No long-lived timers in UI.
 - **Backend Contract** (`src/api/*`, `docs/API_REFERENCE.md`): kebab-case, soft delete, midpoint ordering.
 

@@ -94,26 +94,6 @@ The app reads configuration from `window.ENV` in the browser. To customize the A
 
 Or set the default in `src/lib.rs` via the `get_api_url()` function.
 
-
-## Project Structure
-
-```
-hulunote-app/
-├── src/
-│   └── lib.rs         # Main app (components, API client, state)
-├── index.html          # Entry HTML (Trunk + Tailwind pipeline)
-├── trunk.toml         # Trunk build configuration
-├── tailwind.config.js # Tailwind CSS configuration
-├── public/
-│   └── style.css      # Global styles with Tailwind directives
-├── Cargo.toml         # Dependencies and WASM config
-└── docs/              # Documentation
-    ├── PRODUCT.md       # Product overview
-    ├── API_REFERENCE.md
-    ├── LEPTOS_GUIDE.md  # Leptos development guide
-    └── TEST_GUIDE.md    # How to run unit/WASM tests
-```
-
 ## Documentation
 
 - [Interaction Semantics](./docs/PRODUCT.md#9-interaction-semantics-current-implementation)
