@@ -1498,7 +1498,7 @@ pub fn OutlineNode(
 
                 let has_kids = !kids.is_empty();
                 let marker_class = if has_kids {
-                    "-mt-0.5 h-5 w-5 inline-flex items-center justify-center text-muted-foreground cursor-pointer hover:text-foreground/80"
+                    "absolute -left-[26px] top-1/2 -translate-y-1/2 h-5 w-5 inline-flex items-center justify-center text-muted-foreground/70 cursor-pointer opacity-0 transition-opacity duration-200 ease-out group-hover:opacity-100 group-focus-within:opacity-100 hover:text-foreground/90"
                 } else {
                     "-mt-0.5 h-5 w-5 inline-flex items-center justify-center text-muted-foreground"
                 };
@@ -1588,15 +1588,15 @@ pub fn OutlineNode(
                                     let is_drag_over = drag_over_nav_id.get().as_deref() == Some(id.as_str());
 
                                     if is_editing {
-                                        "outline-row outline-row--editing flex items-center gap-0.5 py-0.5"
+                                        "group outline-row outline-row--editing -ml-10 pl-10 flex items-center gap-0.5 py-0.5"
                                     } else if is_dragging && is_drag_source {
                                         // Make the dragged row semi-transparent (keep content visible).
-                                        "outline-row flex items-center gap-0.5 py-0.5 rounded-md bg-muted/30 opacity-40"
+                                        "group outline-row -ml-10 pl-10 flex items-center gap-0.5 py-0.5 rounded-md bg-muted/30 opacity-40"
                                     } else if is_dragging && is_drag_over {
                                         // Highlight drop target only while dragging.
-                                        "outline-row flex items-center gap-0.5 py-0.5 rounded-md bg-muted ring-1 ring-ring/40"
+                                        "group outline-row -ml-10 pl-10 flex items-center gap-0.5 py-0.5 rounded-md bg-muted ring-1 ring-ring/40"
                                     } else {
-                                        "outline-row flex items-center gap-0.5 py-0.5"
+                                        "group outline-row -ml-10 pl-10 flex items-center gap-0.5 py-0.5"
                                     }
                                 }
                                 // Drag is started from the bullet/triangle only (button below).
@@ -1711,62 +1711,69 @@ pub fn OutlineNode(
                                     }
                                 }
                             >
-                            <button
-                                class=marker_class
-                                draggable="true"
-                                on:dragstart=move |ev: web_sys::DragEvent| {
-                                    let id = nav_id_sv.get_value();
+                            {if has_kids {
+                                view! {
+                                    <div class="relative -mt-0.5 h-5 w-5 inline-flex items-center justify-center text-muted-foreground">
+                                        <svg viewBox="0 0 20 20" class="h-2.5 w-2.5" fill="currentColor" aria-hidden="true">
+                                            <circle cx="10" cy="10" r="3"></circle>
+                                        </svg>
 
-                                    // UX: dragging should not keep the row in editing state.
-                                    if editing_id.get_untracked().as_deref() == Some(id.as_str()) {
-                                        editing_id.set(None);
-                                        // Close autocomplete if it was open.
-                                        ac.ac_open.set(false);
-                                        ac.ac_start_utf16.set(None);
-                                    }
+                                        <button
+                                            class=marker_class
+                                            draggable="true"
+                                            on:dragstart=move |ev: web_sys::DragEvent| {
+                                                let id = nav_id_sv.get_value();
 
-                                    dragging_nav_id.set(Some(id.clone()));
-                                    drag_over_nav_id.set(Some(id.clone()));
+                                                // UX: dragging should not keep the row in editing state.
+                                                if editing_id.get_untracked().as_deref() == Some(id.as_str()) {
+                                                    editing_id.set(None);
+                                                    // Close autocomplete if it was open.
+                                                    ac.ac_open.set(false);
+                                                    ac.ac_start_utf16.set(None);
+                                                }
 
-                                    if let Some(dt) = ev.data_transfer() {
-                                        let _ = dt.set_data("text/plain", &id);
-                                        dt.set_drop_effect("move");
+                                                dragging_nav_id.set(Some(id.clone()));
+                                                drag_over_nav_id.set(Some(id.clone()));
 
-                                        // Show the whole row as the drag preview (not just the bullet).
-                                        if let Some(row) = ev
-                                            .current_target()
-                                            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-                                            .and_then(|el| el.closest(".outline-row").ok().flatten())
-                                        {
-                                            // Anchor the drag preview under the cursor to avoid the "jump" feeling.
-                                            let rect = row.get_bounding_client_rect();
-                                            let ox = ((ev.client_x() as f64) - rect.left()).round() as i32;
-                                            let oy = ((ev.client_y() as f64) - rect.top()).round() as i32;
-                                            dt.set_drag_image(&row, ox, oy);
-                                        }
-                                    }
+                                                if let Some(dt) = ev.data_transfer() {
+                                                    let _ = dt.set_data("text/plain", &id);
+                                                    dt.set_drop_effect("move");
+
+                                                    // Show the whole row as the drag preview (not just the bullet).
+                                                    if let Some(row) = ev
+                                                        .current_target()
+                                                        .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                                                        .and_then(|el| el.closest(".outline-row").ok().flatten())
+                                                    {
+                                                        // Anchor the drag preview under the cursor to avoid the "jump" feeling.
+                                                        let rect = row.get_bounding_client_rect();
+                                                        let ox = ((ev.client_x() as f64) - rect.left()).round() as i32;
+                                                        let oy = ((ev.client_y() as f64) - rect.top()).round() as i32;
+                                                        dt.set_drag_image(&row, ox, oy);
+                                                    }
+                                                }
+                                            }
+                                            on:dragend=move |_ev: web_sys::DragEvent| {
+                                                dragging_nav_id.set(None);
+                                                drag_over_nav_id.set(None);
+                                            }
+                                            on:click=move |ev| on_toggle_cb.run(ev)
+                                        >
+                                            {marker_view}
+                                        </button>
+                                    </div>
                                 }
-                                on:dragend=move |_ev: web_sys::DragEvent| {
-                                    dragging_nav_id.set(None);
-                                    drag_over_nav_id.set(None);
+                                .into_any()
+                            } else {
+                                view! {
+                                    <span class="-mt-0.5 h-5 w-5 inline-flex items-center justify-center text-muted-foreground">
+                                        <svg viewBox="0 0 20 20" class="h-2.5 w-2.5" fill="currentColor" aria-hidden="true">
+                                            <circle cx="10" cy="10" r="3"></circle>
+                                        </svg>
+                                    </span>
                                 }
-                                on:click={
-                                    let has_kids = has_kids;
-                                    move |ev| {
-                                        if has_kids {
-                                            on_toggle_cb.run(ev)
-                                        }
-                                    }
-                                }
-                                aria-disabled=move || (!has_kids).to_string()
-                                title=move || if has_kids {
-                                    if n.is_display { "Collapse" } else { "Expand" }
-                                } else {
-                                    ""
-                                }
-                            >
-                                {marker_view}
-                            </button>
+                                .into_any()
+                            }}
 
                             <div class="min-w-0 flex-1 text-sm">
                                 {move || {
