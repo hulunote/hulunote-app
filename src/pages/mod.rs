@@ -4,7 +4,7 @@ use crate::components::ui::{
     Alert, AlertDescription, Button, ButtonSize, ButtonVariant, Card, CardContent, CardDescription,
     CardHeader, CardTitle, Input, Label, Spinner,
 };
-use crate::drafts::get_title_override;
+use crate::drafts::resolve_local_note_title;
 use crate::editor::OutlineEditor;
 use crate::models::Nav;
 use crate::state::{AppContext, DbUiActions};
@@ -1117,7 +1117,7 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
                                                             let db_id_href = db_id.clone();
                                                             let note_id = n.note_id.clone();
                                                             // Use local draft if available (local-first).
-                                                            let title = get_title_override(&db_id, &note_id, &n.title);
+                                                            let title = resolve_local_note_title(&db_id, &note_id, &n.title);
 
                                                             let db_name_opt = dbs
                                                                 .iter()
@@ -1382,7 +1382,7 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
                                                             };
 
                                                             // Use title override to match note title behavior
-                                                            let display_title = get_title_override(&db_id_for_list, &id_for_href, &n.title);
+                                                            let display_title = resolve_local_note_title(&db_id_for_list, &id_for_href, &n.title);
                                                             view! {
                                                                 <div class=row_class>
                                                                     <a
@@ -2911,7 +2911,7 @@ pub fn DbHomePage() -> impl IntoView {
                                                 .into_iter()
                                                 .map(|n| {
                                                     // Use title override to match note title behavior (local-first).
-                                                    let display_title = get_title_override(&db, &n.id, &n.title);
+                                                    let display_title = resolve_local_note_title(&db, &n.id, &n.title);
                                                     view! {
                                                         <a
                                                             href=format!("/db/{}/note/{}", db, n.id)

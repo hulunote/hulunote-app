@@ -468,7 +468,7 @@ pub(crate) fn get_due_unsynced_nav_meta_drafts(
     out
 }
 
-pub(crate) fn apply_nav_meta_overrides(db_id: &str, note_id: &str, navs: &mut [Nav]) {
+pub(crate) fn reconcile_local_nav_meta(db_id: &str, note_id: &str, navs: &mut [Nav]) {
     if db_id.trim().is_empty() || note_id.trim().is_empty() {
         return;
     }
@@ -494,7 +494,7 @@ pub(crate) fn apply_nav_meta_overrides(db_id: &str, note_id: &str, navs: &mut [N
     }
 }
 
-pub(crate) fn get_title_override(db_id: &str, note_id: &str, server_title: &str) -> String {
+pub(crate) fn resolve_local_note_title(db_id: &str, note_id: &str, server_title: &str) -> String {
     if db_id.trim().is_empty() || note_id.trim().is_empty() {
         return server_title.to_string();
     }
@@ -554,7 +554,7 @@ pub(crate) fn get_pending_nav_ids(db_id: &str, note_id: &str) -> BTreeSet<String
         .collect()
 }
 
-pub(crate) fn get_nav_override(
+pub(crate) fn resolve_local_nav_content(
     db_id: &str,
     note_id: &str,
     nav_id: &str,

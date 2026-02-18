@@ -7,7 +7,7 @@ use crate::linking::{
 use crate::drafts::{load_note_snapshot, save_note_snapshot};
 use crate::components::hooks::use_random::use_random_id_for;
 use crate::components::ui::{Command, CommandItem, CommandList, Spinner};
-use crate::drafts::{apply_nav_meta_overrides, get_nav_override, get_pending_nav_ids};
+use crate::drafts::{reconcile_local_nav_meta, resolve_local_nav_content, get_pending_nav_ids};
 use crate::models::{Nav, Note};
 use crate::state::AppContext;
 use crate::state::NoteSyncController;
@@ -866,6 +866,16 @@ fn merge_server_with_pending_snapshot(
     server_navs
 }
 
+fn reconcile_local_nav_content(db_id: &str, note_id: &str, navs: &mut [Nav]) {
+    if db_id.trim().is_empty() || note_id.trim().is_empty() {
+        return;
+    }
+
+    for n in navs.iter_mut() {
+        n.content = resolve_local_nav_content(db_id, note_id, &n.id, &n.content);
+    }
+}
+
 #[component]
 pub fn OutlineEditor(
     note_id: impl Fn() -> String + Clone + Send + Sync + 'static,
@@ -980,7 +990,8 @@ pub fn OutlineEditor(
                     target_cursor_col.set(Some(0));
                 }
 
-                apply_nav_meta_overrides(&db_id_now, &id, &mut xs);
+                reconcile_local_nav_content(&db_id_now, &id, &mut xs);
+                reconcile_local_nav_meta(&db_id_now, &id, &mut xs);
                 navs.set(xs);
             } else {
                 offline.set(true);
@@ -1032,7 +1043,8 @@ pub fn OutlineEditor(
                         save_note_snapshot(&db_id2, &id, title, xs.clone(), crate::util::now_ms());
                     }
 
-                    apply_nav_meta_overrides(&db_id2, &id, &mut xs);
+                    reconcile_local_nav_content(&db_id2, &id, &mut xs);
+                    reconcile_local_nav_meta(&db_id2, &id, &mut xs);
                     navs.set(xs);
                 }
                 Err(e) => {
@@ -1045,7 +1057,8 @@ pub fn OutlineEditor(
                             offline_missing_snapshot.set(false);
                             error.set(None);
                             let mut xs = snap.navs;
-                            apply_nav_meta_overrides(&db_id2, &id, &mut xs);
+                            reconcile_local_nav_content(&db_id2, &id, &mut xs);
+                            reconcile_local_nav_meta(&db_id2, &id, &mut xs);
                             navs.set(xs);
                         } else {
                             offline.set(true);
@@ -1743,7 +1756,7 @@ pub fn OutlineNode(
                                         let db_id = app_state.0.current_database_id.get_untracked().unwrap_or_default();
                                         let note_id = note_id_sv.get_value();
                                         let id_now = nav_id_sv.get_value();
-                                        let content_now = get_nav_override(&db_id, &note_id, &id_now, &n.content);
+                                        let content_now = resolve_local_nav_content(&db_id, &note_id, &id_now, &n.content);
                                         let content_for_click = content_now.clone();
 
                                         // Show placeholder text for empty nodes while keeping them clickable.
@@ -1822,7 +1835,7 @@ pub fn OutlineNode(
                                                     let note_id = note_id_sv.get_value();
 
                                                     let cb = Closure::<dyn FnMut()>::new(move || {
-                                                        let restored = get_nav_override(&db_id, &note_id, &id, &next_value);
+                                                        let restored = resolve_local_nav_content(&db_id, &note_id, &id, &next_value);
 
                                                         editing_id.set(Some(id.clone()));
                                                         editing_value.set(restored.clone());

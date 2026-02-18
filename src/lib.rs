@@ -21,8 +21,8 @@ use wasm_bindgen::prelude::wasm_bindgen;
 mod wasm_tests {
     use crate::api::ApiClient;
     use crate::drafts::{
-        apply_nav_meta_overrides, get_due_unsynced_nav_meta_drafts, get_nav_override,
-        get_title_override, load_note_snapshot, mark_nav_synced, mark_navs_deleted_in_snapshot,
+        reconcile_local_nav_meta, get_due_unsynced_nav_meta_drafts, resolve_local_nav_content,
+        resolve_local_note_title, load_note_snapshot, mark_nav_synced, mark_navs_deleted_in_snapshot,
         mark_title_synced, save_note_snapshot, touch_nav, touch_nav_meta, touch_title,
     };
     use crate::editor::{
@@ -98,7 +98,7 @@ mod wasm_tests {
     }
 
     #[wasm_bindgen_test]
-    fn test_note_draft_nav_and_title_overrides_with_synced_ms_gate() {
+    fn test_note_draft_nav_and_title_resolution_with_synced_ms_gate() {
         let db_id = "db-test";
         let note_id = "note-test";
         let nav_id = "nav-test";
@@ -113,25 +113,68 @@ mod wasm_tests {
 
         // Title: local-first - unsynced draft takes precedence.
         touch_title(db_id, note_id, "t1");
-        assert_eq!(get_title_override(db_id, note_id, "server"), "t1");
+        assert_eq!(resolve_local_note_title(db_id, note_id, "server"), "t1");
 
         // After marking synced, draft payload may be pruned; fallback to server value.
         mark_title_synced(db_id, note_id, i64::MAX);
-        assert_eq!(get_title_override(db_id, note_id, "server"), "server");
+        assert_eq!(resolve_local_note_title(db_id, note_id, "server"), "server");
 
         // Nav: local-first - unsynced draft takes precedence.
         touch_nav(db_id, note_id, nav_id, "c1");
-        assert_eq!(get_nav_override(db_id, note_id, nav_id, "sv"), "c1");
+        assert_eq!(resolve_local_nav_content(db_id, note_id, nav_id, "sv"), "c1");
 
         // After marking synced, nav draft may be pruned; fallback to server value.
         mark_nav_synced(db_id, note_id, nav_id, i64::MAX);
-        assert_eq!(get_nav_override(db_id, note_id, nav_id, "sv"), "sv");
+        assert_eq!(resolve_local_nav_content(db_id, note_id, nav_id, "sv"), "sv");
 
         // Test with another nav to verify separate drafts.
         touch_nav(db_id, note_id, nav_id2, "c2");
-        assert_eq!(get_nav_override(db_id, note_id, nav_id2, "sv2"), "c2");
+        assert_eq!(resolve_local_nav_content(db_id, note_id, nav_id2, "sv2"), "c2");
 
         // Cleanup.
+        if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+            let _ = storage.remove_item(&format!("hulunote_draft_note::{db_id}::{note_id}"));
+        }
+        ApiClient::clear_storage();
+    }
+
+    #[wasm_bindgen_test]
+    fn test_refresh_rebuild_prefers_local_unsynced_nav_content() {
+        let db_id = "db-refresh-content";
+        let note_id = "note-refresh-content";
+        let nav_id = "aa";
+
+        if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+            let _ = storage.remove_item(&format!("hulunote_draft_note::{db_id}::{note_id}"));
+        }
+        ApiClient::clear_storage();
+
+        // Simulate server payload returned during refresh.
+        let mut rebuilt = vec![Nav {
+            id: nav_id.to_string(),
+            note_id: note_id.to_string(),
+            parid: crate::util::ROOT_CONTAINER_PARENT_ID.to_string(),
+            same_deep_order: 1.0,
+            content: "server-old".to_string(),
+            is_display: true,
+            is_delete: false,
+            properties: None,
+        }];
+
+        // Simulate local unsynced edit done right before refresh.
+        touch_nav(db_id, note_id, nav_id, "local-new");
+
+        // Refresh rebuild path must apply local content override for existing nav ids.
+        for n in rebuilt.iter_mut() {
+            n.content = resolve_local_nav_content(db_id, note_id, &n.id, &n.content);
+        }
+
+        assert_eq!(
+            rebuilt[0].content,
+            "local-new",
+            "refresh rebuild should show latest local draft content immediately"
+        );
+
         if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
             let _ = storage.remove_item(&format!("hulunote_draft_note::{db_id}::{note_id}"));
         }
@@ -203,7 +246,7 @@ mod wasm_tests {
     }
 
     #[wasm_bindgen_test]
-    fn test_snapshot_delete_and_meta_override_survive_refresh_rebuild() {
+    fn test_snapshot_delete_and_meta_reconcile_survive_refresh_rebuild() {
         let db_id = "db-refresh";
         let note_id = "note-refresh";
 
@@ -259,7 +302,7 @@ mod wasm_tests {
         let mut rebuilt = load_note_snapshot(db_id, note_id)
             .expect("snapshot exists")
             .navs;
-        apply_nav_meta_overrides(db_id, note_id, &mut rebuilt);
+        reconcile_local_nav_meta(db_id, note_id, &mut rebuilt);
 
         let bb = rebuilt
             .iter()
