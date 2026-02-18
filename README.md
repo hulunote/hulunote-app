@@ -102,6 +102,7 @@ Or set the default in `src/lib.rs` via the `get_api_url()` function.
 - [Leptos Development Guide](./docs/LEPTOS_GUIDE.md)
 - [Test Guide](./docs/TEST_GUIDE.md)
 - [Rust/UI Guide](./docs/RUST_UI_GUIDE.md)
+- [CSR Deployment Guide](./docs/DEPLOY_CSR.md)
 
 ## Desktop Build
 
@@ -109,14 +110,23 @@ To build for desktop, you have several options:
 
 ### Option 1: Tauri (Recommended)
 
-Tauri can wrap the WASM application for native desktop deployment.
+Use Tauri v2 to package the Trunk CSR build as a native desktop app.
+
+This repository tracks `src-tauri/` in git, so `tauri init` is not required for normal development.
+
+Run desktop app in development mode:
 
 ```bash
-# Install Tauri CLI
-cargo install tauri-cli
+npx tauri dev
+```
 
-# Build for desktop
-cargo tauri build
+Build desktop bundles:
+
+```bash
+npx tauri build
+
+# Debug build (for local troubleshooting / DevTools)
+npx tauri build --debug
 ```
 
 ### Option 2: Web Desktop Wrappers
