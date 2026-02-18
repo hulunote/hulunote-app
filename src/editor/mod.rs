@@ -2487,10 +2487,9 @@ pub fn OutlineNode(
                                                 let v = ce_text(&el);
                                                 editing_value.set(v.clone());
 
-                                                if !is_composing.get_untracked() {
-                                                    ce_set_wiki_highlighted(&el, &v);
-                                                    ce_set_caret_utf16(&el, caret_utf16);
-                                                }
+                                                // Keep browser-native caret behavior in all typing scenarios.
+                                                // Avoid mutating contenteditable DOM on each input event; that can
+                                                // cause caret drift/jumps around line breaks.
 
                                                 let nav_id = nav_id_sv.get_value();
 
@@ -2578,11 +2577,8 @@ pub fn OutlineNode(
                                                     .target()
                                                     .and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
                                                 {
-                                                    let (caret_utf16, _caret_end_utf16, _len) = ce_selection_utf16(&el);
                                                     let v = ce_text(&el);
-                                                    editing_value.set(v.clone());
-                                                    ce_set_wiki_highlighted(&el, &v);
-                                                    ce_set_caret_utf16(&el, caret_utf16);
+                                                    editing_value.set(v);
                                                 }
                                             }
                                             // on:blur only persists content; it does NOT decide whether we should exit
@@ -2619,10 +2615,6 @@ pub fn OutlineNode(
                                                         return;
                                                     };
 
-                                                    // Persist caret so window/tab switches can restore exact position.
-                                                    let (caret_col, _caret_end, _len_before) = ce_selection_utf16(&el);
-                                                    target_cursor_col.set(Some(caret_col));
-
                                                     // IMPORTANT: read the value from the contenteditable element.
                                                     let new_content = ce_text(&el);
 
@@ -2645,6 +2637,16 @@ pub fn OutlineNode(
                                                     {
                                                         return;
                                                     }
+
+                                                    // Ignore stale blur from a node that is no longer active editor.
+                                                    // Otherwise old DOM text may overwrite newer split/update results.
+                                                    if editing_id.get_untracked().as_deref() != Some(nav_id_now.as_str()) {
+                                                        return;
+                                                    }
+
+                                                    // Persist caret so window/tab switches can restore exact position.
+                                                    let (caret_col, _caret_end, _len_before) = ce_selection_utf16(&el);
+                                                    target_cursor_col.set(Some(caret_col));
 
                                                     // MVP: always persist on blur.
                                                     navs.update(|xs| {
@@ -3471,11 +3473,50 @@ pub fn OutlineNode(
                                                     return;
                                                 }
 
-                                                // Shift+Enter: soft line break inside a node (do NOT create a new Nav).
-                                                // Let the browser handle DOM mutations, and rely on the `on:input` handler
-                                                // to update drafts + schedule sync. This avoids regressions where a custom
-                                                // insertion interacts badly with the trailing placeholder `<br>`.
+                                                // Shift+Enter: allow entering multi-line mode from first-line editing.
+                                                // After multi-line exists, plain Enter handles in-node line breaks.
                                                 if key == "Enter" && ev.shift_key() {
+                                                    return;
+                                                }
+
+                                                // After the first soft line break exists in this nav,
+                                                // plain Enter should continue as a browser-native soft line break
+                                                // (caret movement + DOM mutation handled by contenteditable).
+                                                // Use both DOM semantic `<br>` count and textual `\n` as signals,
+                                                // because browser/contenteditable normalization may vary.
+                                                let (total_lines, is_first_line) = input()
+                                                    .as_ref()
+                                                    .map(|el| {
+                                                        // First-line detection based on caret byte position relative to
+                                                        // the first newline in plain text.
+                                                        // - no '\n' => first line
+                                                        // - caret <= first '\n' => first line
+                                                        // - caret > first '\n' => not first line
+                                                        let txt = ce_text(el);
+                                                        let (caret_start, _caret_end, _len) = ce_selection_utf16(el);
+                                                        let caret_byte = utf16_to_byte_idx(&txt, caret_start).min(txt.len());
+                                                        let is_first = txt
+                                                            .find('\n')
+                                                            .map(|first_nl| caret_byte <= first_nl)
+                                                            .unwrap_or(true);
+
+                                                        let total = txt.split('\n').count().max(1) as u32;
+                                                        (total, is_first)
+                                                    })
+                                                    .unwrap_or((1, true));
+
+                                                // In multi-line soft-enter mode, plain Enter keeps soft line breaks
+                                                // except when caret is back on the first line: then Enter should
+                                                // restore the default behavior (split/create next nav).
+                                                let has_soft_break_context =
+                                                    semantic_br_count > 0
+                                                        || v_now.contains('\n')
+                                                        || total_lines > 1;
+                                                if key == "Enter"
+                                                    && !ev.shift_key()
+                                                    && has_soft_break_context
+                                                    && !is_first_line
+                                                {
                                                     return;
                                                 }
 
@@ -3498,8 +3539,34 @@ pub fn OutlineNode(
                                                         (txt, caret)
                                                     };
 
-                                                    let (left_content, right_content) =
-                                                        split_at_utf16(&current_content, caret_utf16);
+                                                    // In multi-line navs, splitting by Enter should only cut within
+                                                    // the first line when caret is on the first line.
+                                                    // Keep lower lines in the current nav instead of moving them
+                                                    // to the new sibling nav.
+                                                    let (left_content, right_content) = if let Some(first_nl_byte) = current_content.find('\n') {
+                                                        let first_nl_utf16 = byte_idx_to_utf16(&current_content, first_nl_byte);
+                                                        if caret_utf16 <= first_nl_utf16 {
+                                                            let first_line = &current_content[..first_nl_byte];
+                                                            let rest_lines = &current_content[(first_nl_byte + 1)..];
+                                                            let first_line_len = first_line.encode_utf16().count() as u32;
+                                                            let split_pos = caret_utf16.min(first_line_len);
+                                                            let split_byte = utf16_to_byte_idx(first_line, split_pos);
+
+                                                            let left_first = &first_line[..split_byte.min(first_line.len())];
+                                                            let right_first = &first_line[split_byte.min(first_line.len())..];
+
+                                                            let left = if rest_lines.is_empty() {
+                                                                left_first.to_string()
+                                                            } else {
+                                                                format!("{}\n{}", left_first, rest_lines)
+                                                            };
+                                                            (left, right_first.to_string())
+                                                        } else {
+                                                            split_at_utf16(&current_content, caret_utf16)
+                                                        }
+                                                    } else {
+                                                        split_at_utf16(&current_content, caret_utf16)
+                                                    };
 
                                                     navs.update(|xs| {
                                                         if let Some(x) = xs.iter_mut().find(|x| x.id == nav_id_now) {
