@@ -1618,7 +1618,7 @@ pub fn OutlineNode(
 
                 let has_kids = !kids.is_empty();
                 let marker_class = if has_kids {
-                    "absolute z-20 -left-[32px] top-1/2 -translate-y-1/2 h-7 w-7 inline-flex items-center justify-center text-muted-foreground/70 cursor-pointer opacity-0 transition-opacity duration-200 ease-out group-hover:opacity-100 group-focus-within:opacity-100 hover:text-foreground/90"
+                    "absolute z-20 -left-[24px] top-1/2 -translate-y-1/2 h-7 w-7 inline-flex items-center justify-center text-muted-foreground/70 cursor-pointer opacity-0 transition-opacity duration-200 ease-out group-hover:opacity-100 group-focus-within:opacity-100 hover:text-foreground/90"
                 } else {
                     "-mt-0.5 h-5 w-5 inline-flex items-center justify-center text-muted-foreground"
                 };
