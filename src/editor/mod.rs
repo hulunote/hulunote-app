@@ -3901,7 +3901,20 @@ mod editor_delete_behavior_tests {
     #[test]
     fn test_collect_visible_preorder_ids_filters_deleted() {
         let note_id = "note".to_string();
+        let root_parent = ROOT_CONTAINER_PARENT_ID.to_string();
 
+        // Root container: parid == ROOT_CONTAINER_PARENT_ID
+        let root = Nav {
+            id: "root".to_string(),
+            note_id: note_id.clone(),
+            parid: root_parent,
+            same_deep_order: 0.0,
+            content: "ROOT".to_string(),
+            is_display: true,
+            is_delete: false,
+            properties: None,
+        };
+        // a: top-level node under root
         let a = Nav {
             id: "a".to_string(),
             note_id: note_id.clone(),
@@ -3912,6 +3925,7 @@ mod editor_delete_behavior_tests {
             is_delete: false,
             properties: None,
         };
+        // b_deleted: deleted node under root
         let b_deleted = Nav {
             id: "b".to_string(),
             note_id: note_id.clone(),
@@ -3922,6 +3936,7 @@ mod editor_delete_behavior_tests {
             is_delete: true,
             properties: None,
         };
+        // c: child of a
         let c = Nav {
             id: "c".to_string(),
             note_id: note_id.clone(),
@@ -3933,7 +3948,7 @@ mod editor_delete_behavior_tests {
             properties: None,
         };
 
-        let all = vec![b_deleted, c, a];
+        let all = vec![b_deleted, c, a, root];
         let ids = collect_visible_preorder_ids(&all);
 
         // Deleted node is excluded; children of visible nodes are included.
