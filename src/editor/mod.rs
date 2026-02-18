@@ -646,6 +646,29 @@ fn collect_visible_preorder_ids(all: &[Nav]) -> Vec<String> {
     out
 }
 
+fn can_soft_delete_empty_nav(all: &[Nav], nav_id: &str) -> bool {
+    if nav_id.trim().is_empty() {
+        return false;
+    }
+
+    // Rule 1: the first visible top-level nav is protected.
+    if collect_visible_top_level_nodes(all)
+        .first()
+        .map(|n| n.id.as_str() == nav_id)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+
+    // Rule 2: a parent nav with any non-deleted child cannot be deleted.
+    let has_child = all.iter().any(|n| !n.is_delete && n.parid == nav_id);
+    if has_child {
+        return false;
+    }
+
+    true
+}
+
 fn build_ac_items(titles: &[String], q: &str) -> Vec<AcItem> {
     let q_norm = q.to_lowercase();
     let mut items: Vec<AcItem> = vec![];
@@ -3245,6 +3268,13 @@ pub fn OutlineNode(
 
                                                     let all = navs.get_untracked();
 
+                                                    // Guardrails:
+                                                    // 1) first top-level nav cannot be deleted
+                                                    // 2) parent navs with children cannot be deleted
+                                                    if !can_soft_delete_empty_nav(&all, &nav_id_now) {
+                                                        return;
+                                                    }
+
                                                     // Visible order for choosing next focus.
                                                     let visible = visible_preorder(&all);
                                                     let idx = visible.iter().position(|id| id == &nav_id_now);
@@ -3680,6 +3710,104 @@ mod editor_delete_behavior_tests {
         );
 
         assert_eq!(outline_delete_state(false, 0), OutlineDeleteState::Empty);
+    }
+
+    #[test]
+    fn test_can_soft_delete_empty_nav_blocks_first_top_level() {
+        let note_id = "n1".to_string();
+        let root_parent = ROOT_CONTAINER_PARENT_ID.to_string();
+
+        let root_container = Nav {
+            id: "root-container".to_string(),
+            note_id: note_id.clone(),
+            parid: root_parent,
+            same_deep_order: 0.0,
+            content: "ROOT".to_string(),
+            is_display: true,
+            is_delete: false,
+            properties: None,
+        };
+
+        let first = Nav {
+            id: "first".to_string(),
+            note_id: note_id.clone(),
+            parid: "root-container".to_string(),
+            same_deep_order: 1.0,
+            content: "".to_string(),
+            is_display: true,
+            is_delete: false,
+            properties: None,
+        };
+
+        let second = Nav {
+            id: "second".to_string(),
+            note_id,
+            parid: "root-container".to_string(),
+            same_deep_order: 2.0,
+            content: "".to_string(),
+            is_display: true,
+            is_delete: false,
+            properties: None,
+        };
+
+        let all = vec![root_container, first, second];
+
+        assert!(!can_soft_delete_empty_nav(&all, "first"));
+        assert!(can_soft_delete_empty_nav(&all, "second"));
+    }
+
+    #[test]
+    fn test_can_soft_delete_empty_nav_blocks_parent_with_children() {
+        let note_id = "n1".to_string();
+        let root_parent = ROOT_CONTAINER_PARENT_ID.to_string();
+
+        let root_container = Nav {
+            id: "root-container".to_string(),
+            note_id: note_id.clone(),
+            parid: root_parent,
+            same_deep_order: 0.0,
+            content: "ROOT".to_string(),
+            is_display: true,
+            is_delete: false,
+            properties: None,
+        };
+
+        let first = Nav {
+            id: "first".to_string(),
+            note_id: note_id.clone(),
+            parid: "root-container".to_string(),
+            same_deep_order: 1.0,
+            content: "".to_string(),
+            is_display: true,
+            is_delete: false,
+            properties: None,
+        };
+
+        let parent = Nav {
+            id: "parent".to_string(),
+            note_id: note_id.clone(),
+            parid: "root-container".to_string(),
+            same_deep_order: 2.0,
+            content: "".to_string(),
+            is_display: true,
+            is_delete: false,
+            properties: None,
+        };
+
+        let child = Nav {
+            id: "child".to_string(),
+            note_id,
+            parid: "parent".to_string(),
+            same_deep_order: 1.0,
+            content: "".to_string(),
+            is_display: true,
+            is_delete: false,
+            properties: None,
+        };
+
+        let all = vec![root_container, first, parent, child];
+
+        assert!(!can_soft_delete_empty_nav(&all, "parent"));
     }
 
     #[test]
