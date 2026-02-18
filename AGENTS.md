@@ -61,6 +61,13 @@ Recommended body (for non-trivial commits):
 - behavior impact / migration notes
 - how to verify (tests or manual steps)
 
+When a commit contains multiple tightly-coupled intents (allowed only when splitting would hurt reviewability):
+- keep one dominant subject line for the primary intent
+- add a structured body with bullet points, one bullet per intent
+- each bullet should start with an action verb (`add`, `rename`, `remove`, etc.)
+- keep each bullet focused on message clarity (intent + scope), not implementation minutiae
+- avoid vague summaries like "misc fixes" or "cleanup"
+
 Examples:
 - `fix(outline): keep column when jumping between blocks with arrow keys`
 - `feat(search): add title-only filter to query panel`
