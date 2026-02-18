@@ -1,13 +1,13 @@
 #[cfg(test)]
 use crate::api::CreateOrUpdateNavRequest;
-use crate::bidirectional_link::{
+use crate::linking::{
     extract_bidirectional_links, normalize_outline_page_title, parse_bidirectional_tokens,
     BidirectionalToken,
 };
-use crate::cache::{load_note_snapshot, save_note_snapshot};
+use crate::note_persistence::{load_note_snapshot, save_note_snapshot};
 use crate::components::hooks::use_random::use_random_id_for;
 use crate::components::ui::{Command, CommandItem, CommandList, Spinner};
-use crate::drafts::{apply_nav_meta_overrides, get_nav_override, get_pending_nav_ids};
+use crate::note_persistence::{apply_nav_meta_overrides, get_nav_override, get_pending_nav_ids};
 use crate::models::{Nav, Note};
 use crate::state::AppContext;
 use crate::state::NoteSyncController;
@@ -18,6 +18,11 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
+
+mod interaction;
+mod ordering;
+mod render;
+mod selection;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct AcItem {
@@ -54,31 +59,15 @@ pub(crate) fn apply_nav_content(navs: &mut [Nav], nav_id: &str, content: &str) -
 }
 
 fn utf16_to_byte_idx(s: &str, pos_utf16: u32) -> usize {
-    if pos_utf16 == 0 {
-        return 0;
-    }
-    let mut acc: u32 = 0;
-    for (i, ch) in s.char_indices() {
-        let w = ch.len_utf16() as u32;
-        if acc + w > pos_utf16 {
-            return i;
-        }
-        acc += w;
-        if acc == pos_utf16 {
-            return i + ch.len_utf8();
-        }
-    }
-    s.len()
+    selection::utf16_to_byte_idx(s, pos_utf16)
 }
 
 fn byte_idx_to_utf16(s: &str, byte_idx: usize) -> u32 {
-    s[..byte_idx.min(s.len())].encode_utf16().count() as u32
+    selection::byte_idx_to_utf16(s, byte_idx)
 }
 
 fn split_at_utf16(s: &str, pos_utf16: u32) -> (String, String) {
-    let byte_idx = utf16_to_byte_idx(s, pos_utf16);
-    let cut = byte_idx.min(s.len());
-    (s[..cut].to_string(), s[cut..].to_string())
+    selection::split_at_utf16(s, pos_utf16)
 }
 
 // ---- contenteditable helpers (Phase 9 MVP) ----
@@ -94,11 +83,7 @@ fn ce_set_text(el: &web_sys::HtmlElement, s: &str) {
 }
 
 fn escape_html(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
+    render::escape_html(s)
 }
 
 fn set_popover_open(el: &web_sys::Element, open: bool) {
@@ -2519,7 +2504,7 @@ pub fn OutlineNode(
                                             on:keydown=move |ev: web_sys::KeyboardEvent| {
                                                 let key = ev.key();
 
-                                                if is_composing.get_untracked() {
+                                                if !interaction::should_handle_editor_keys(is_composing.get_untracked()) {
                                                     // Don't interfere with IME (Enter/Arrow keys are often used to select candidates).
                                                     return;
                                                 }
@@ -3289,7 +3274,7 @@ pub fn OutlineNode(
 
                                                     // Local-first tombstones: keep a meta draft with is_delete=true so
                                                     // refresh can re-apply the local delete over the server list.
-                                                    crate::cache::mark_navs_deleted_in_snapshot(
+                                                    crate::note_persistence::mark_navs_deleted_in_snapshot(
                                                         &db_id_now,
                                                         &note_id_now,
                                                         &subtree,
@@ -3367,11 +3352,8 @@ pub fn OutlineNode(
                                                         .find(|s| s.same_deep_order > me.same_deep_order)
                                                         .map(|s| s.same_deep_order);
 
-                                                    let new_order = if let Some(no) = next_order {
-                                                        (me.same_deep_order + no) / 2.0
-                                                    } else {
-                                                        me.same_deep_order + 1.0
-                                                    };
+                                                    let new_order =
+                                                        ordering::midpoint_or_append(me.same_deep_order, next_order);
 
                                                     // Local-first create: insert a UUID-backed node and start editing immediately.
                                                     let new_id = make_nav_id();

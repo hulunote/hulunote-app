@@ -5,7 +5,9 @@ mod cache;
 mod components;
 mod drafts;
 mod editor;
+mod linking;
 mod models;
+mod note_persistence;
 mod pages;
 mod state;
 mod storage;
@@ -21,11 +23,10 @@ use wasm_bindgen::prelude::wasm_bindgen;
 #[cfg(all(test, target_arch = "wasm32"))]
 mod wasm_tests {
     use crate::api::ApiClient;
-    use crate::cache::{load_note_snapshot, mark_navs_deleted_in_snapshot, save_note_snapshot};
-    use crate::drafts::{
+    use crate::note_persistence::{
         apply_nav_meta_overrides, get_due_unsynced_nav_meta_drafts, get_nav_override,
-        get_title_override, mark_nav_synced, mark_title_synced, touch_nav, touch_nav_meta,
-        touch_title,
+        get_title_override, load_note_snapshot, mark_nav_synced, mark_navs_deleted_in_snapshot,
+        mark_title_synced, save_note_snapshot, touch_nav, touch_nav_meta, touch_title,
     };
     use crate::editor::{
         should_exit_edit_on_click_target, should_exit_edit_on_focusout_related_target,
