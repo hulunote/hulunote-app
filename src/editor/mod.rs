@@ -645,30 +645,30 @@ fn ensure_titles_loaded(app_state: &AppContext, ac: &AutocompleteCtx) {
     });
 }
 
-fn root_container_ids(all: &[Nav]) -> std::collections::BTreeSet<String> {
+fn root_container_id(all: &[Nav]) -> Option<String> {
     let root_container_parent_id = ROOT_CONTAINER_PARENT_ID;
-    let roots: std::collections::BTreeSet<String> = all
+    let candidates: Vec<String> = all
         .iter()
         .filter(|n| n.parid == root_container_parent_id)
         .map(|n| n.id.clone())
         .collect();
 
-    if roots.len() > 1 {
+    if candidates.len() > 1 {
         leptos::logging::error!(
-            "invalid note nav tree: expected <=1 root container under ROOT_CONTAINER_PARENT_ID, got {}. using all as fallback.",
-            roots.len()
+            "invalid note nav tree: expected <=1 root container under ROOT_CONTAINER_PARENT_ID, got {}.",
+            candidates.len()
         );
     }
 
-    roots
+    candidates.into_iter().next()
 }
 
 fn collect_visible_top_level_nodes(all: &[Nav]) -> Vec<Nav> {
-    let root_ids = root_container_ids(all);
-    let mut out = if !root_ids.is_empty() {
-        // Top-level nodes are children of root containers.
+    let root_id = root_container_id(all);
+    let mut out = if let Some(root_id) = root_id {
+        // Top-level nodes are children of the root container.
         all.iter()
-            .filter(|n| !n.is_delete && root_ids.contains(&n.parid))
+            .filter(|n| !n.is_delete && n.parid == root_id)
             .cloned()
             .collect::<Vec<_>>()
     } else {
@@ -726,15 +726,9 @@ fn collect_preview_lines(navs: &[Nav], limit: usize) -> Vec<String> {
         }
     }
 
-    let roots = root_container_ids(navs);
     let mut out: Vec<String> = vec![];
-    if !roots.is_empty() {
-        for root_id in roots.iter() {
-            if out.len() >= limit {
-                break;
-            }
-            walk(&by_parent, root_id, 0, &mut out, limit);
-        }
+    if let Some(root_id) = root_container_id(navs) {
+        walk(&by_parent, &root_id, 0, &mut out, limit);
     }
     out
 }
@@ -4104,7 +4098,7 @@ mod editor_delete_behavior_tests {
     }
 
     #[test]
-    fn test_root_container_ids_returns_all_when_multiple_root_candidates_exist() {
+    fn test_root_container_id_returns_all_when_multiple_root_candidates_exist() {
         let root_parent = ROOT_CONTAINER_PARENT_ID.to_string();
         let note_id = "n1".to_string();
 
@@ -4129,8 +4123,9 @@ mod editor_delete_behavior_tests {
             properties: None,
         };
 
-        let ids = root_container_ids(&[root_a, root_b]);
-        assert!(ids.len() == 2);
+        let id = root_container_id(&[root_a, root_b]);
+        // When multiple root candidates exist, we log error and return first one.
+        assert!(id.is_some());
     }
 
     #[test]
