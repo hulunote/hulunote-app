@@ -2180,7 +2180,7 @@ pub fn NotePage() -> impl IntoView {
         app_state.0.notes.get().into_iter().find(|n| n.id == id)
     };
 
-    let title_input_class = "h-11 min-w-0 flex-1 text-3xl md:text-3xl font-semibold focus-visible:border-primary/80 focus-visible:ring-primary/35";
+    let title_input_class = "h-11 min-w-0 flex-1 border-0 shadow-none ring-0 focus-visible:border-transparent focus-visible:ring-0 focus-visible:ring-offset-0 text-3xl md:text-3xl font-semibold";
 
     view! {
         <>

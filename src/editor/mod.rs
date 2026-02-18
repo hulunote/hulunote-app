@@ -2400,7 +2400,7 @@ pub fn OutlineNode(
                                             attr:data-nav-id=nav_id_sv.get_value()
                                             attr:data-note-id=note_id_sv.get_value()
                                             style=format!("anchor-name: {}", ac_anchor_name_sv.get_value())
-                                            class="relative z-10 min-h-[28px] w-full min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1 py-1 text-sm leading-6 text-foreground caret-foreground outline-none focus-visible:border-primary/80 focus-visible:ring-2 focus-visible:ring-primary/35 whitespace-pre-wrap"
+                                            class="relative z-10 min-h-[28px] w-full min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1 py-1 text-sm leading-6 text-foreground caret-foreground outline-none whitespace-pre-wrap"
                                             on:input=move |ev: web_sys::Event| {
                                                 let Some(el) = ev
                                                     .target()
