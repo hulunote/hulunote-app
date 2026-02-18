@@ -666,15 +666,14 @@ fn root_container_ids(all: &[Nav]) -> std::collections::BTreeSet<String> {
 fn collect_visible_top_level_nodes(all: &[Nav]) -> Vec<Nav> {
     let root_ids = root_container_ids(all);
     let mut out = if !root_ids.is_empty() {
+        // Top-level nodes are children of root containers.
         all.iter()
             .filter(|n| !n.is_delete && root_ids.contains(&n.parid))
             .cloned()
             .collect::<Vec<_>>()
     } else {
-        all.iter()
-            .filter(|n| !n.is_delete && n.parid == ROOT_CONTAINER_PARENT_ID)
-            .cloned()
-            .collect::<Vec<_>>()
+        // No root container: malformed data, return empty.
+        vec![]
     };
 
     out.sort_by(|a, b| {
@@ -3908,12 +3907,11 @@ mod editor_delete_behavior_tests {
     #[test]
     fn test_collect_visible_preorder_ids_filters_deleted() {
         let note_id = "note".to_string();
-        let root = ROOT_CONTAINER_PARENT_ID.to_string();
 
         let a = Nav {
             id: "a".to_string(),
             note_id: note_id.clone(),
-            parid: root.clone(),
+            parid: "root".to_string(),
             same_deep_order: 1.0,
             content: "a".to_string(),
             is_display: true,
@@ -3923,7 +3921,7 @@ mod editor_delete_behavior_tests {
         let b_deleted = Nav {
             id: "b".to_string(),
             note_id: note_id.clone(),
-            parid: root.clone(),
+            parid: "root".to_string(),
             same_deep_order: 2.0,
             content: "b".to_string(),
             is_display: true,
@@ -3945,7 +3943,7 @@ mod editor_delete_behavior_tests {
         let ids = collect_visible_preorder_ids(&all);
 
         // Deleted node is excluded; children of visible nodes are included.
-        assert_eq!(ids, vec!["c".to_string()]);
+        assert_eq!(ids, vec!["a".to_string(), "c".to_string()]);
     }
 
     #[test]
