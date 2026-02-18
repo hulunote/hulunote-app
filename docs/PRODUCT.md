@@ -380,12 +380,17 @@ It is written as product behavior (not implementation detail) and is intended to
 
 ### 9.3 Keyboard behavior
 
-#### Enter
-- Saves current node and creates the next sibling under the same parent.
-- New sibling order uses midpoint ordering:
+#### Enter / Shift+Enter
+- `Shift+Enter`: inserts an in-node soft line break (used to enter multi-line mode).
+- `Enter` behavior depends on caret line in a multi-line node:
+  - If caret is on the **first line**: split/create next sibling (outliner behavior).
+    - In multi-line content, only first-line trailing text is moved to the new sibling.
+    - Lower lines remain in the current node.
+  - If caret is on a **non-first line**: insert an in-node soft line break.
+- Split/create uses midpoint ordering for the new sibling:
   - midpoint(current, next sibling), or
   - current + 1.0 if no next sibling.
-- Focus moves into the newly created sibling.
+- When split/create occurs, focus moves into the newly created sibling.
 
 #### Tab / Shift+Tab
 - `Tab`: indent under previous visible sibling.
