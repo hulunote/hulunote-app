@@ -1,13 +1,13 @@
 #[cfg(test)]
 use crate::api::CreateOrUpdateNavRequest;
+use crate::components::hooks::use_random::use_random_id_for;
+use crate::components::ui::{Command, CommandItem, CommandList, Spinner};
+use crate::drafts::{get_pending_nav_ids, reconcile_local_nav_meta, resolve_local_nav_content};
+use crate::drafts::{load_note_snapshot, save_note_snapshot};
 use crate::linking::{
     extract_bidirectional_links, normalize_outline_page_title, parse_bidirectional_tokens,
     BidirectionalToken,
 };
-use crate::drafts::{load_note_snapshot, save_note_snapshot};
-use crate::components::hooks::use_random::use_random_id_for;
-use crate::components::ui::{Command, CommandItem, CommandList, Spinner};
-use crate::drafts::{reconcile_local_nav_meta, resolve_local_nav_content, get_pending_nav_ids};
 use crate::models::{Nav, Note};
 use crate::state::AppContext;
 use crate::state::NoteSyncController;
@@ -1167,7 +1167,8 @@ pub fn OutlineEditor(
                     // Never re-introduce fully-synced snapshot rows that the backend no longer returns.
                     let pending_ids = get_pending_nav_ids(&db_id2, &id);
                     let snapshot_navs = load_note_snapshot(&db_id2, &id).map(|s| s.navs);
-                    let mut xs = merge_server_with_pending_snapshot(list, snapshot_navs, &pending_ids);
+                    let mut xs =
+                        merge_server_with_pending_snapshot(list, snapshot_navs, &pending_ids);
 
                     let title2 = title.clone();
                     let maybe_tmp =
@@ -1617,7 +1618,7 @@ pub fn OutlineNode(
 
                 let has_kids = !kids.is_empty();
                 let marker_class = if has_kids {
-                    "absolute -left-[32px] top-1/2 -translate-y-1/2 h-7 w-7 inline-flex items-center justify-center text-muted-foreground/70 cursor-pointer opacity-0 transition-opacity duration-200 ease-out group-hover:opacity-100 group-focus-within:opacity-100 hover:text-foreground/90"
+                    "absolute z-20 -left-[32px] top-1/2 -translate-y-1/2 h-7 w-7 inline-flex items-center justify-center text-muted-foreground/70 cursor-pointer opacity-0 transition-opacity duration-200 ease-out group-hover:opacity-100 group-focus-within:opacity-100 hover:text-foreground/90"
                 } else {
                     "-mt-0.5 h-5 w-5 inline-flex items-center justify-center text-muted-foreground"
                 };
@@ -1916,7 +1917,17 @@ pub fn OutlineNode(
                                                 dragging_nav_id.set(None);
                                                 drag_over_nav_id.set(None);
                                             }
-                                            on:click=move |ev| on_toggle_cb.run(ev)
+                                            on:mousedown=move |ev: web_sys::MouseEvent| {
+                                                // Handle toggle on mousedown to avoid edit-surface focus/selection
+                                                // interference swallowing click while a node is being edited.
+                                                ev.prevent_default();
+                                                ev.stop_propagation();
+                                                on_toggle_cb.run(ev);
+                                            }
+                                            on:click=move |ev: web_sys::MouseEvent| {
+                                                ev.prevent_default();
+                                                ev.stop_propagation();
+                                            }
                                         >
                                             {marker_view}
                                         </button>
