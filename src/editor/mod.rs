@@ -1626,7 +1626,7 @@ pub fn OutlineNode(
 
                 let has_kids = !kids.is_empty();
                 let marker_class = if has_kids {
-                    "absolute z-20 -left-[24px] top-1/2 -translate-y-1/2 h-7 w-7 inline-flex items-center justify-center text-muted-foreground/70 cursor-pointer opacity-0 transition-opacity duration-200 ease-out group-hover:opacity-100 hover:text-foreground/90"
+                    "absolute z-20 -left-[29px] top-1/2 -translate-y-1/2 h-7 w-7 inline-flex items-center justify-center text-muted-foreground/70 cursor-pointer opacity-0 transition-opacity duration-200 ease-out group-hover:opacity-100 hover:text-foreground/90"
                 } else {
                     "-mt-0.5 h-5 w-5 inline-flex items-center justify-center text-muted-foreground"
                 };
@@ -1657,59 +1657,66 @@ pub fn OutlineNode(
 
                 let on_toggle_cb = on_toggle.clone();
 
+                // VSCode-style folding connector for expanded blocks.
+                // Align to the current nav's indentation guide column (same level as its bullet).
+                let connector_left = (depth * 26 + 10) as i32;
+
+                let connector_view = if n.is_display && has_kids {
+                    view! {
+                        <div
+                            class=move || {
+                                let nav_id_for_connector = nav_id_sv.get_value();
+                                let hide = hover_triangle_parent_nav_id.get().as_deref()
+                                    == Some(nav_id_for_connector.as_str());
+                                let is_active = editing_id.get().as_deref()
+                                    == Some(nav_id_for_connector.as_str());
+
+                                if hide {
+                                    "pointer-events-none absolute top-7 bottom-px w-px bg-muted-foreground/65 opacity-0 transition-opacity duration-150 ease-out"
+                                } else if is_active {
+                                    "pointer-events-none absolute top-7 bottom-px w-px bg-foreground/80 opacity-100 transition-[opacity,background-color] duration-150 ease-out"
+                                } else {
+                                    "pointer-events-none absolute top-7 bottom-px w-px bg-muted-foreground/65 opacity-100 transition-[opacity,background-color] duration-150 ease-out"
+                                }
+                            }
+                            style=move || format!("left: {}px", connector_left)
+                        ></div>
+                    }
+                    .into_any()
+                } else {
+                    ().into_view().into_any()
+                };
+
                 let children_view = if n.is_display && has_kids {
                     let kid_ids_sv = StoredValue::new(
                         kids.into_iter().map(|c| c.id).collect::<Vec<String>>(),
                     );
-                    // VSCode-style folding connector for expanded blocks.
-                    // Align to the current nav's indentation guide column (same level as its bullet).
-                    let connector_left = (depth * 26 + 16) as i32;
 
                     view! {
-                        <div class="relative">
-                            <div
-                                class=move || {
-                                    let nav_id_for_connector = nav_id_sv.get_value();
-                                    let hide = hover_triangle_parent_nav_id.get().as_deref()
-                                        == Some(nav_id_for_connector.as_str());
-                                    let is_active = editing_id.get().as_deref()
-                                        == Some(nav_id_for_connector.as_str());
-
-                                    if hide {
-                                        "pointer-events-none absolute top-1 bottom-px w-px bg-muted-foreground/65 opacity-0 transition-opacity duration-150 ease-out"
-                                    } else if is_active {
-                                        "pointer-events-none absolute top-1 bottom-px w-px bg-foreground/80 opacity-100 transition-[opacity,background-color] duration-150 ease-out"
-                                    } else {
-                                        "pointer-events-none absolute top-1 bottom-px w-px bg-muted-foreground/65 opacity-100 transition-[opacity,background-color] duration-150 ease-out"
-                                    }
+                        <For
+                            each=move || kid_ids_sv.get_value()
+                            key=|id| id.clone()
+                            children=move |id| {
+                                let nid = note_id_sv.get_value();
+                                view! {
+                                    <OutlineNode
+                                        nav_id=id
+                                        depth=depth + 1
+                                        navs=navs
+                                        note_id=nid
+                                        editing_id=editing_id
+                                        editing_value=editing_value
+                                        editing_snapshot=editing_snapshot
+                                        dragging_nav_id=dragging_nav_id
+                                        drag_over_nav_id=drag_over_nav_id
+                                        target_cursor_col=target_cursor_col
+                                        editing_ref=editing_ref
+                                        focused_nav_id=focused_nav_id
+                                        hover_triangle_parent_nav_id=hover_triangle_parent_nav_id
+                                    />
                                 }
-                                style=move || format!("left: {}px", connector_left)
-                            ></div>
-                            <For
-                                each=move || kid_ids_sv.get_value()
-                                key=|id| id.clone()
-                                children=move |id| {
-                                    let nid = note_id_sv.get_value();
-                                    view! {
-                                        <OutlineNode
-                                            nav_id=id
-                                            depth=depth + 1
-                                            navs=navs
-                                            note_id=nid
-                                            editing_id=editing_id
-                                            editing_value=editing_value
-                                            editing_snapshot=editing_snapshot
-                                            dragging_nav_id=dragging_nav_id
-                                            drag_over_nav_id=drag_over_nav_id
-                                            target_cursor_col=target_cursor_col
-                                            editing_ref=editing_ref
-                                            focused_nav_id=focused_nav_id
-                                            hover_triangle_parent_nav_id=hover_triangle_parent_nav_id
-                                        />
-                                    }
-                                }
-                            />
-                        </div>
+                            }
+                        />
                     }
                     .into_any()
                 } else {
@@ -1717,7 +1724,7 @@ pub fn OutlineNode(
                 };
 
                 view! {
-                    <div>
+                    <div class="relative">
                         <div style=move || format!("padding-left: {}px", indent_px)>
                             <div
                                 id=move || format!("nav-{}", nav_id_sv.get_value())
@@ -1731,15 +1738,15 @@ pub fn OutlineNode(
                                     let is_drag_over = drag_over_nav_id.get().as_deref() == Some(id.as_str());
 
                                     if is_editing {
-                                        "group outline-row outline-row--editing -ml-10 pl-10 flex items-center gap-0.5 py-0"
+                                        "group outline-row outline-row--editing -ml-10 pl-10 flex items-start gap-0.5 py-0"
                                     } else if is_dragging && is_drag_source {
                                         // Make the dragged row semi-transparent (keep content visible).
-                                        "group outline-row -ml-10 pl-10 flex items-center gap-0.5 py-0 rounded-md bg-muted/30 opacity-40"
+                                        "group outline-row -ml-10 pl-10 flex items-start gap-0.5 py-0 rounded-md bg-muted/30 opacity-40"
                                     } else if is_dragging && is_drag_over {
                                         // Highlight drop target only while dragging.
-                                        "group outline-row -ml-10 pl-10 flex items-center gap-0.5 py-0 rounded-md bg-muted ring-1 ring-ring/40"
+                                        "group outline-row -ml-10 pl-10 flex items-start gap-0.5 py-0 rounded-md bg-muted ring-1 ring-ring/40"
                                     } else {
-                                        "group outline-row -ml-10 pl-10 flex items-center gap-0.5 py-0"
+                                        "group outline-row -ml-10 pl-10 flex items-start gap-0.5 py-0"
                                     }
                                 }
                                 // Drag is started from the bullet/triangle only (button below).
@@ -1874,7 +1881,7 @@ pub fn OutlineNode(
                             >
                             {if has_kids {
                                 view! {
-                                    <div class="relative self-start mt-0.5 h-8 w-8 inline-flex items-center justify-center text-muted-foreground">
+                                    <div class="relative self-start mt-px h-[24px] w-5 inline-flex items-center justify-center text-muted-foreground">
                                         {if n.is_display {
                                             view! {
                                                 <svg viewBox="0 0 20 20" class="h-5 w-5" fill="currentColor" aria-hidden="true">
@@ -1949,7 +1956,7 @@ pub fn OutlineNode(
                                 .into_any()
                             } else {
                                 view! {
-                                    <span class="self-start mt-0.5 h-8 w-8 inline-flex items-center justify-center text-muted-foreground">
+                                    <span class="self-start mt-px h-[24px] w-5 inline-flex items-center justify-center text-muted-foreground">
                                         <svg viewBox="0 0 20 20" class="h-5 w-5" fill="currentColor" aria-hidden="true">
                                             <circle cx="10" cy="10" r="3"></circle>
                                         </svg>
@@ -1980,9 +1987,9 @@ pub fn OutlineNode(
                                             content_now
                                         };
                                         let content_class = if is_empty_display {
-                                            "cursor-text whitespace-pre-wrap min-h-[22px] w-full min-w-0 flex-1 px-1 py-0.5 text-sm leading-5 rounded-md border border-transparent text-muted-foreground/70 italic"
+                                            "cursor-text whitespace-pre-wrap min-h-[22px] w-full min-w-0 flex-1 px-1 py-0.5 text-sm leading-[22px] rounded-md border border-transparent text-muted-foreground/70 italic"
                                         } else {
-                                            "cursor-text whitespace-pre-wrap min-h-[22px] w-full min-w-0 flex-1 px-1 py-0.5 text-sm leading-5 rounded-md border border-transparent"
+                                            "cursor-text whitespace-pre-wrap min-h-[22px] w-full min-w-0 flex-1 px-1 py-0.5 text-sm leading-[22px] rounded-md border border-transparent"
                                         };
 
                                         let id_for_click = nav_id_sv.get_value();
@@ -2574,7 +2581,7 @@ pub fn OutlineNode(
                                             attr:data-nav-id=nav_id_sv.get_value()
                                             attr:data-note-id=note_id_sv.get_value()
                                             style=format!("anchor-name: {}", ac_anchor_name_sv.get_value())
-                                            class="relative z-10 min-h-[22px] w-full min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1 py-0.5 text-sm leading-5 text-foreground caret-foreground outline-none whitespace-pre-wrap"
+                                            class="relative z-10 min-h-[22px] w-full min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1 py-0.5 text-sm leading-[22px] text-foreground caret-foreground outline-none whitespace-pre-wrap"
                                             on:input=move |ev: web_sys::Event| {
                                                 let Some(el) = ev
                                                     .target()
@@ -3885,6 +3892,7 @@ pub fn OutlineNode(
                         </div>
                         </div>
 
+                        {connector_view}
                         {children_view}
                     </div>
                 }
