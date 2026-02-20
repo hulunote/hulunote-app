@@ -111,10 +111,13 @@ Acceptance requirements:
 
 ## 4. Outliner semantics
 
-- `Enter`: commits current node and creates a new sibling node (existing behavior).
-- Soft line break (intra-block newline):
-  - Implement `Shift+Enter` to insert a newline into the rich-text doc.
-  - It must not create a new Nav.
+- Enter / Shift+Enter behavior (current product semantics):
+  - In single-line mode, `Shift+Enter` inserts the first soft line break to enter multi-line mode.
+  - In multi-line mode, `Enter` inserts soft line breaks within the current Nav.
+  - In multi-line mode, `Shift+Enter` toggles caret position:
+    - first press: move caret to the end of the first line (no new break),
+    - second press: return caret to the previously remembered in-block position.
+  - Soft line-break actions must not create a new Nav.
 
 - `Tab` / `Shift+Tab`: indent/outdent (existing behavior).
 - `Backspace/Delete` on empty: soft-delete node (existing behavior).

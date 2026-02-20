@@ -112,3 +112,27 @@ pub(crate) fn write_recent_note(db_id: &str, note_id: &str, title: &str) {
     );
     save_json_to_storage(RECENT_NOTES_KEY, &next);
 }
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod wasm_tests {
+    use super::*;
+    use crate::api::ApiClient;
+    use crate::models::AccountInfo;
+    use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    #[wasm_bindgen_test]
+    fn test_user_storage_roundtrip() {
+        ApiClient::clear_storage();
+
+        let user = AccountInfo {
+            extra: serde_json::json!({"id": 1, "username": "u"}),
+        };
+        save_user_to_storage(&user);
+        let loaded = load_user_from_storage().expect("should load user from localStorage");
+        assert_eq!(loaded.extra["username"], "u");
+
+        ApiClient::clear_storage();
+    }
+}

@@ -10,19 +10,28 @@ use crate::linking::{
 };
 use crate::models::{Nav, Note};
 use crate::state::AppContext;
+#[cfg(target_arch = "wasm32")]
+use crate::state::AppState;
 use crate::state::NoteSyncController;
 use crate::util::ROOT_CONTAINER_PARENT_ID;
 use leptos::ev;
 use leptos::html;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+#[cfg(target_arch = "wasm32")]
+use leptos_router::components::Router;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 
+pub(crate) mod core;
 mod interaction;
 mod ordering;
 mod render;
 mod selection;
+use self::core::{
+    normalize_editor_text_for_persist, reduce_editor_state, serialize_editor_atoms_for_persist,
+    serialize_editor_atoms_for_view, EditorAtom, EditorIntent, EditorState,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct AcItem {
@@ -72,14 +81,105 @@ fn split_at_utf16(s: &str, pos_utf16: u32) -> (String, String) {
 
 // ---- contenteditable helpers (Phase 9 MVP) ----
 
+struct EditorDomSnapshot {
+    atoms: Vec<EditorAtom>,
+    view_text: String,
+    persisted_text: String,
+}
+
+const CARET_ANCHOR_ATTR: &str = "data-caret-anchor";
+const CARET_ANCHOR_VALUE: &str = "1";
+
+fn ce_snapshot(el: &web_sys::HtmlElement) -> EditorDomSnapshot {
+    fn push_text_atom(raw: &str, out: &mut Vec<EditorAtom>) {
+        let normalized = normalize_editor_text_for_persist(raw);
+        let mut parts = normalized.split('\n').peekable();
+        while let Some(part) = parts.next() {
+            if !part.is_empty() {
+                out.push(EditorAtom::Text(part.to_string()));
+            }
+            if parts.peek().is_some() {
+                out.push(EditorAtom::SoftBreak);
+            }
+        }
+    }
+
+    fn walk(node: &web_sys::Node, out: &mut Vec<EditorAtom>) {
+        if node.node_type() == web_sys::Node::TEXT_NODE {
+            push_text_atom(&node.node_value().unwrap_or_default(), out);
+            return;
+        }
+
+        if let Some(el) = node.dyn_ref::<web_sys::Element>() {
+            if el.get_attribute(CARET_ANCHOR_ATTR).as_deref() == Some(CARET_ANCHOR_VALUE) {
+                return;
+            }
+            if el.tag_name().eq_ignore_ascii_case("br") {
+                let is_trailing_placeholder =
+                    el.get_attribute("data-trailing-break").as_deref() == Some("1");
+                out.push(if is_trailing_placeholder {
+                    EditorAtom::PlaceholderBreak
+                } else {
+                    EditorAtom::SoftBreak
+                });
+                return;
+            }
+        }
+
+        let kids = node.child_nodes();
+        for i in 0..kids.length() {
+            if let Some(k) = kids.get(i) {
+                walk(&k, out);
+            }
+        }
+    }
+
+    let root: web_sys::Node = el.clone().unchecked_into();
+    let mut atoms = Vec::new();
+    walk(&root, &mut atoms);
+    let view_text = serialize_editor_atoms_for_view(&atoms);
+    let persisted_text = serialize_editor_atoms_for_persist(&atoms);
+    EditorDomSnapshot {
+        atoms,
+        view_text,
+        persisted_text,
+    }
+}
+
 fn ce_text(el: &web_sys::HtmlElement) -> String {
-    // `innerText` preserves line breaks as the user sees them.
-    el.inner_text()
+    ce_snapshot(el).persisted_text
+}
+
+fn ce_view_text(el: &web_sys::HtmlElement) -> String {
+    ce_snapshot(el).view_text
 }
 
 fn ce_set_text(el: &web_sys::HtmlElement, s: &str) {
-    // Avoid setting HTML; keep plain text only.
-    el.set_inner_text(s);
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+        // Fallback for non-browser contexts.
+        el.set_inner_text(s);
+        return;
+    };
+
+    // Keep DOM representation deterministic: text nodes + explicit <br> for each '\n'.
+    el.set_text_content(None);
+    let parts: Vec<&str> = s.split('\n').collect();
+    for (idx, part) in parts.iter().enumerate() {
+        if !part.is_empty() {
+            let text = doc.create_text_node(part);
+            let _ = el.append_child(&text);
+        }
+        if idx + 1 < parts.len() {
+            if let Ok(br) = doc.create_element("br") {
+                let _ = el.append_child(&br);
+            }
+        }
+    }
+
+    if s.ends_with('\n') {
+        let root: web_sys::Node = el.clone().unchecked_into();
+        let _ = ensure_trailing_caret_anchor(&doc, &root);
+    }
 }
 
 fn escape_html(s: &str) -> String {
@@ -140,41 +240,6 @@ enum OutlineDeleteState {
     Empty,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EnterBehavior {
-    SoftBreak,
-    SplitNav,
-}
-
-type EnterActionFlags = u8;
-const ENTER_FLAG_IS_ENTER_KEY: EnterActionFlags = 1 << 0;
-const ENTER_FLAG_SHIFT_PRESSED: EnterActionFlags = 1 << 1;
-const ENTER_FLAG_HAS_MULTILINE_CONTEXT: EnterActionFlags = 1 << 2;
-const ENTER_FLAG_CARET_ON_FIRST_LINE: EnterActionFlags = 1 << 3;
-
-fn has_flag(flags: EnterActionFlags, flag: EnterActionFlags) -> bool {
-    (flags & flag) != 0
-}
-
-fn resolve_nav_enter_action(flags: EnterActionFlags) -> Option<EnterBehavior> {
-    if !has_flag(flags, ENTER_FLAG_IS_ENTER_KEY) {
-        return None;
-    }
-
-    if has_flag(flags, ENTER_FLAG_SHIFT_PRESSED) {
-        return Some(EnterBehavior::SoftBreak);
-    }
-
-    let has_multiline_context = has_flag(flags, ENTER_FLAG_HAS_MULTILINE_CONTEXT);
-    let caret_on_first_line = has_flag(flags, ENTER_FLAG_CARET_ON_FIRST_LINE);
-
-    if has_multiline_context && !caret_on_first_line {
-        Some(EnterBehavior::SoftBreak)
-    } else {
-        Some(EnterBehavior::SplitNav)
-    }
-}
-
 fn split_nav_content_for_enter(current_content: &str, caret_utf16: u32) -> (String, String) {
     // In multi-line navs, splitting by Enter should only cut within
     // the first line when caret is on the first line.
@@ -214,6 +279,7 @@ fn has_any_text_content(s: &str) -> bool {
     s.chars().any(|c| !c.is_whitespace() && !is_ignorable(c))
 }
 
+#[cfg(test)]
 fn effective_semantic_br_count(total_br_count: u32, has_trailing_placeholder_br: bool) -> u32 {
     if has_trailing_placeholder_br {
         total_br_count.saturating_sub(1)
@@ -239,9 +305,9 @@ fn should_persist_nav_id(nav_id: &str) -> bool {
     !id.is_empty()
 }
 
-fn ensure_trailing_break(doc: &web_sys::Document, root: &web_sys::Node) -> Option<web_sys::Node> {
+fn ensure_trailing_caret_anchor(doc: &web_sys::Document, root: &web_sys::Node) -> Option<web_sys::Node> {
     // Remove all existing trailing markers inside this root.
-    if let Ok(list) = doc.query_selector_all("br[data-trailing-break='1']") {
+    if let Ok(list) = doc.query_selector_all("[data-caret-anchor='1']") {
         for i in 0..list.length() {
             if let Some(n) = list.get(i) {
                 if root.contains(Some(&n)) {
@@ -251,17 +317,19 @@ fn ensure_trailing_break(doc: &web_sys::Document, root: &web_sys::Node) -> Optio
         }
     }
 
-    let Ok(br) = doc.create_element("br") else {
+    let Ok(anchor) = doc.create_element("br") else {
         return None;
     };
-    let _ = br.set_attribute("data-trailing-break", "1");
-    let br_node: web_sys::Node = br.unchecked_into();
-    let _ = root.append_child(&br_node);
-    Some(br_node)
+    let _ = anchor.set_attribute(CARET_ANCHOR_ATTR, CARET_ANCHOR_VALUE);
+    let _ = anchor.set_attribute("data-trailing-break", "1");
+    let _ = anchor.set_attribute("aria-hidden", "true");
+    let anchor_node: web_sys::Node = anchor.unchecked_into();
+    let _ = root.append_child(&anchor_node);
+    Some(anchor_node)
 }
 
 fn ce_selection_utf16(el: &web_sys::HtmlElement) -> (u32, u32, u32) {
-    let txt = ce_text(el);
+    let txt = ce_view_text(el);
     let len = txt.encode_utf16().count() as u32;
 
     let Some(win) = web_sys::window() else {
@@ -288,9 +356,82 @@ fn ce_selection_utf16(el: &web_sys::HtmlElement) -> (u32, u32, u32) {
         return (len, len, len);
     }
 
-    // Convert (node, offset) -> text length using a prefix range.
-    let prefix = range.clone_range();
-    let _ = prefix.select_node_contents(&root_node);
+    fn subtree_utf16_len(node: &web_sys::Node) -> u32 {
+        if node.node_type() == web_sys::Node::TEXT_NODE {
+            return node.node_value().unwrap_or_default().encode_utf16().count() as u32;
+        }
+        if let Some(el) = node.dyn_ref::<web_sys::Element>() {
+            if el.tag_name().eq_ignore_ascii_case("br") {
+                return 1;
+            }
+        }
+        let kids = node.child_nodes();
+        let mut total = 0;
+        for i in 0..kids.length() {
+            if let Some(k) = kids.get(i) {
+                total += subtree_utf16_len(&k);
+            }
+        }
+        total
+    }
+
+    fn point_utf16(
+        root: &web_sys::Node,
+        target: &web_sys::Node,
+        target_offset: u32,
+    ) -> Option<u32> {
+        fn walk(
+            node: &web_sys::Node,
+            target: &web_sys::Node,
+            target_offset: u32,
+            total: &mut u32,
+        ) -> bool {
+            if node.is_same_node(Some(target)) {
+                if node.node_type() == web_sys::Node::TEXT_NODE {
+                    let n = node.node_value().unwrap_or_default().encode_utf16().count() as u32;
+                    *total += target_offset.min(n);
+                    return true;
+                }
+                let kids = node.child_nodes();
+                let upto = target_offset.min(kids.length());
+                for i in 0..upto {
+                    if let Some(k) = kids.get(i) {
+                        *total += subtree_utf16_len(&k);
+                    }
+                }
+                return true;
+            }
+
+            if node.node_type() == web_sys::Node::TEXT_NODE {
+                *total += node.node_value().unwrap_or_default().encode_utf16().count() as u32;
+                return false;
+            }
+            if let Some(el) = node.dyn_ref::<web_sys::Element>() {
+                if el.tag_name().eq_ignore_ascii_case("br") {
+                    *total += 1;
+                    return false;
+                }
+            }
+
+            let kids = node.child_nodes();
+            for i in 0..kids.length() {
+                if let Some(k) = kids.get(i) {
+                    if walk(&k, target, target_offset, total) {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+
+        let mut total = 0;
+        if walk(root, target, target_offset, &mut total) {
+            Some(total)
+        } else {
+            None
+        }
+    }
+
     let start_container = match range.start_container() {
         Ok(n) => n,
         Err(_) => return (len, len, len),
@@ -299,16 +440,8 @@ fn ce_selection_utf16(el: &web_sys::HtmlElement) -> (u32, u32, u32) {
         Ok(o) => o,
         Err(_) => return (len, len, len),
     };
-    let _ = prefix.set_end(&start_container, start_offset);
-    let start = prefix
-        .to_string()
-        .as_string()
-        .unwrap_or_default()
-        .encode_utf16()
-        .count() as u32;
+    let start = point_utf16(&root_node, &start_container, start_offset).unwrap_or(len);
 
-    let prefix2 = range.clone_range();
-    let _ = prefix2.select_node_contents(&root_node);
     let end_container = match range.end_container() {
         Ok(n) => n,
         Err(_) => return (start, start, len),
@@ -317,13 +450,7 @@ fn ce_selection_utf16(el: &web_sys::HtmlElement) -> (u32, u32, u32) {
         Ok(o) => o,
         Err(_) => return (start, start, len),
     };
-    let _ = prefix2.set_end(&end_container, end_offset);
-    let end = prefix2
-        .to_string()
-        .as_string()
-        .unwrap_or_default()
-        .encode_utf16()
-        .count() as u32;
+    let end = point_utf16(&root_node, &end_container, end_offset).unwrap_or(start);
 
     (start.min(len), end.min(len), len)
 }
@@ -352,8 +479,8 @@ fn ce_current_line_info(el: &web_sys::HtmlElement) -> (u32, u32) {
     let anchor_offset = sel.anchor_offset() as usize;
     let node_type = anchor_node.node_type();
 
-    let inner_text = el.inner_text();
-    let total_lines = inner_text.lines().count().max(1) as u32;
+    let view_text = ce_view_text(el);
+    let total_lines = view_text.lines().count().max(1) as u32;
 
     if anchor_node.is_same_node(Some(&root_node)) {
         let mut line_number = 0u32;
@@ -452,12 +579,13 @@ fn ce_set_caret_utf16(el: &web_sys::HtmlElement, pos_utf16: u32) {
     if !el.is_connected() {
         return;
     }
+    let _ = el.focus();
 
     let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
         return;
     };
 
-    let txt = ce_text(el);
+    let txt = ce_view_text(el);
     let len = txt.encode_utf16().count() as u32;
     let target = pos_utf16.min(len);
 
@@ -478,6 +606,19 @@ fn ce_set_caret_utf16(el: &web_sys::HtmlElement, pos_utf16: u32) {
         None
     }
 
+    fn is_caret_anchor(node: &web_sys::Node) -> bool {
+        node.dyn_ref::<web_sys::Element>()
+            .and_then(|e| e.get_attribute(CARET_ANCHOR_ATTR))
+            .as_deref()
+            == Some(CARET_ANCHOR_VALUE)
+    }
+
+    fn parent_before_anchor(node: &web_sys::Node) -> Option<(web_sys::Node, u32)> {
+        let parent = node.parent_node()?;
+        let idx = child_index(&parent, node)?;
+        Some((parent, idx))
+    }
+
     fn walk(node: &web_sys::Node, remaining: &mut i32, out: &mut Option<(web_sys::Node, u32)>) {
         if out.is_some() {
             return;
@@ -495,15 +636,36 @@ fn ce_set_caret_utf16(el: &web_sys::HtmlElement, pos_utf16: u32) {
         }
 
         if let Some(el) = node.dyn_ref::<web_sys::Element>() {
+            if is_caret_anchor(node) {
+                if *remaining <= 0 {
+                    if let Some(pos) = parent_before_anchor(node) {
+                        *out = Some(pos);
+                    } else {
+                        *out = Some((node.clone(), 0));
+                    }
+                }
+                return;
+            }
+
             if el.tag_name().to_ascii_lowercase() == "br" {
                 if *remaining <= 1 {
-                    // Put caret right after the <br>.
-                    let Some(parent) = node.parent_node() else {
-                        return;
-                    };
-                    if let Some(idx) = child_index(&parent, node) {
-                        *out = Some((parent, idx + 1));
+                    if let Some(next) = node.next_sibling() {
+                        if is_caret_anchor(&next) {
+                            if let Some(pos) = parent_before_anchor(&next) {
+                                *out = Some(pos);
+                            } else {
+                                *out = Some((next, 0));
+                            }
+                            return;
+                        }
                     }
+                    if let Some(parent) = node.parent_node() {
+                        if let Some(idx) = child_index(&parent, node) {
+                            *out = Some((parent, idx + 1));
+                            return;
+                        }
+                    }
+                    *out = Some((node.clone(), u32::MAX));
                 } else {
                     *remaining -= 1;
                 }
@@ -528,7 +690,11 @@ fn ce_set_caret_utf16(el: &web_sys::HtmlElement, pos_utf16: u32) {
     walk(&root_node, &mut remaining, &mut found);
 
     if let Some((node, off)) = found {
-        let _ = range.set_start(&node, off);
+        if off == u32::MAX {
+            let _ = range.set_start_after(&node);
+        } else {
+            let _ = range.set_start(&node, off);
+        }
         let _ = range.collapse_with_to_start(true);
 
         if let Ok(Some(sel)) = doc.get_selection() {
@@ -536,7 +702,105 @@ fn ce_set_caret_utf16(el: &web_sys::HtmlElement, pos_utf16: u32) {
             // `addRange()` throws if the range references nodes that are no longer in the document.
             let _ = sel.add_range(&range);
         }
+        return;
     }
+
+    // Fallback for empty/anchor-only DOM shapes.
+    let _ = range.set_start(&root_node, 0);
+    let _ = range.collapse_with_to_start(true);
+    if let Ok(Some(sel)) = doc.get_selection() {
+        let _ = sel.remove_all_ranges();
+        let _ = sel.add_range(&range);
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub fn test_mount_outline_editor(root: &web_sys::HtmlElement, initial_text: &str) {
+    use leptos::mount::mount_to;
+
+    let nav_id = "nav-test".to_string();
+    let root_container_id = "root-container-test".to_string();
+    let note_id = "note-test".to_string();
+
+    let app_ctx = AppContext(AppState::new());
+    app_ctx
+        .0
+        .current_database_id
+        .set(Some("db-test".to_string()));
+
+    let snapshot_key = format!("hulunote_note_snapshot::{}::{}", "db-test", note_id);
+    let snapshot_value = serde_json::json!({
+        "schema_version": 20260217u32,
+        "saved_ms": 0i64,
+        "db_id": "db-test",
+        "note_id": note_id,
+        "title": "test",
+        "navs": [
+            {
+                "id": root_container_id,
+                "note-id": note_id,
+                "parid": ROOT_CONTAINER_PARENT_ID,
+                "same-deep-order": 0.0f32,
+                "content": "",
+                "is-display": true,
+                "is-delete": false,
+                "properties": null
+            },
+            {
+                "id": nav_id,
+                "note-id": note_id,
+                "parid": root_container_id,
+                "same-deep-order": 1.0f32,
+                "content": initial_text,
+                "is-display": true,
+                "is-delete": false,
+                "properties": null
+            }
+        ]
+    });
+    if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        let _ = storage.set_item(&snapshot_key, &snapshot_value.to_string());
+    }
+
+    let sync = NoteSyncController::new(app_ctx.clone());
+    sync.set_route("db-test".to_string(), note_id.clone());
+    sync.mark_backend_offline_api(&crate::api::ApiError {
+        kind: crate::api::ApiErrorKind::Network,
+        message: "test offline".to_string(),
+    });
+
+    let focused_nav_id: RwSignal<Option<String>> = RwSignal::new(None);
+
+    let root_el = root.clone();
+    mount_to(root_el, move || {
+        provide_context(app_ctx.clone());
+        provide_context(sync.clone());
+        view! {
+            <Router>
+                <OutlineEditor note_id=move || note_id.clone() focused_nav_id=focused_nav_id />
+            </Router>
+        }
+    })
+    .forget();
+}
+
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub fn test_set_caret_utf16(el: &web_sys::HtmlElement, pos_utf16: u32) {
+    ce_set_caret_utf16(el, pos_utf16);
+}
+
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub fn test_caret_utf16(el: &web_sys::HtmlElement) -> u32 {
+    ce_selection_utf16(el).0
+}
+
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub fn test_view_text(el: &web_sys::HtmlElement) -> String {
+    ce_view_text(el)
 }
 
 fn ce_set_caret_from_client_point(el: &web_sys::HtmlElement, client_x: i32, client_y: i32) -> bool {
@@ -877,6 +1141,96 @@ pub(crate) fn should_exit_edit_on_click_target(target: Option<web_sys::EventTarg
     }
 
     true
+}
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod wasm_tests {
+    use super::*;
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    fn wasm_doc() -> web_sys::Document {
+        web_sys::window()
+            .and_then(|w| w.document())
+            .expect("wasm tests should run in a browser with window.document")
+    }
+
+    fn with_test_root<T>(f: impl FnOnce(web_sys::HtmlElement) -> T) -> T {
+        let doc = wasm_doc();
+        let body = doc
+            .body()
+            .expect("wasm tests should run in a browser with document.body")
+            .dyn_into::<web_sys::HtmlElement>()
+            .expect("document.body should be an HtmlElement");
+
+        let root: web_sys::HtmlElement = doc
+            .create_element("div")
+            .expect("create test root")
+            .dyn_into::<web_sys::HtmlElement>()
+            .expect("test root should be HtmlElement");
+        root.set_attribute("data-test-root", "wasm")
+            .expect("set attribute");
+        body.append_child(&root).expect("append test root");
+
+        let out = f(root.clone());
+        let _ = root.remove();
+        out
+    }
+
+    #[wasm_bindgen_test]
+    fn test_exit_edit_mode_rules_focusout_and_mousedown() {
+        with_test_root(|root| {
+            let doc = wasm_doc();
+
+            let outside = doc.create_element("div").expect("create outside");
+            root.append_child(&outside).expect("append outside");
+
+            let outline = doc.create_element("div").expect("create outline");
+            outline
+                .set_attribute("class", "outline-editor")
+                .expect("set class");
+            root.append_child(&outline).expect("append outline");
+
+            let editor = doc.create_element("div").expect("create editor");
+            editor
+                .set_attribute("contenteditable", "true")
+                .expect("set contenteditable");
+            editor
+                .set_attribute("data-nav-id", "n1")
+                .expect("set data-nav-id");
+            editor.set_text_content(Some("hi"));
+            outline.append_child(&editor).expect("append editor");
+
+            let blank = doc.create_element("div").expect("create blank");
+            outline.append_child(&blank).expect("append blank");
+
+            let outside_t: web_sys::EventTarget = outside.unchecked_into();
+            let outline_t: web_sys::EventTarget = outline.unchecked_into();
+            let editor_t: web_sys::EventTarget = editor.unchecked_into();
+            let blank_t: web_sys::EventTarget = blank.unchecked_into();
+
+            assert!(!should_exit_edit_on_focusout_related_target(None));
+            assert!(!should_exit_edit_on_focusout_related_target(Some(
+                outline_t
+            )));
+            assert!(!should_exit_edit_on_focusout_related_target(Some(
+                editor_t.clone()
+            )));
+            assert!(!should_exit_edit_on_focusout_related_target(Some(
+                blank_t.clone()
+            )));
+            assert!(should_exit_edit_on_focusout_related_target(Some(outside_t)));
+
+            assert!(!should_exit_edit_on_click_target(Some(editor_t)));
+            assert!(should_exit_edit_on_click_target(Some(blank_t)));
+            let outside2 = doc.create_element("div").expect("create outside2");
+            root.append_child(&outside2).expect("append outside2");
+            let outside2_t: web_sys::EventTarget = outside2.unchecked_into();
+            assert!(should_exit_edit_on_click_target(Some(outside2_t)));
+        });
+    }
 }
 
 pub(crate) fn get_nav_content(navs: &[Nav], nav_id: &str) -> Option<String> {
@@ -1449,6 +1803,10 @@ pub fn OutlineNode(
 
     // IME stability: while composing, don't intercept outliner keys like Enter/Tab.
     let is_composing: RwSignal<bool> = RwSignal::new(false);
+    // When beforeinput/paste already applied an EditorOp, on:input should be fallback-only.
+    let op_applied_in_this_turn: RwSignal<bool> = RwSignal::new(false);
+    // In multiline mode, Shift+Enter can jump to first-line end and then jump back.
+    let shift_enter_return_caret: RwSignal<Option<u32>> = RwSignal::new(None);
 
     let nav_id_for_nav = nav_id.clone();
     let nav_id_for_toggle = nav_id.clone();
@@ -1827,9 +2185,6 @@ pub fn OutlineNode(
                                     if is_ancestor_of(&navs.get_untracked(), &dragged_id, &nav_id_sv.get_value()) {
                                         return;
                                     }
-                                    if dragged_id.trim().is_empty() {
-                                        return;
-                                    }
 
                                     // Drop completes the drag: clear drag state immediately so UI restores.
                                     dragging_nav_id.set(None);
@@ -1851,7 +2206,6 @@ pub fn OutlineNode(
                                         })
                                         .unwrap_or(true);
 
-                                    let _note_id_now = note_id_sv.get_value();
                                     let all = navs.get_untracked();
                                     let Some((new_parid, new_order)) =
                                         compute_reorder_target(&all, &dragged_id, &target_id, insert_after)
@@ -2138,7 +2492,6 @@ pub fn OutlineNode(
                                                                     };
 
                                                                     let title_for_click = title_raw.clone();
-                                                                    let _title_for_title = title_for_click.clone();
 
                                                                     // Avoid moving `app_state` into one handler and breaking the other.
                                                                     let app_state_hover = app_state.clone();
@@ -2582,6 +2935,114 @@ pub fn OutlineNode(
                                             attr:data-note-id=note_id_sv.get_value()
                                             style=format!("anchor-name: {}", ac_anchor_name_sv.get_value())
                                             class="relative z-10 min-h-[22px] w-full min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1 py-0.5 text-sm leading-[22px] text-foreground caret-foreground outline-none whitespace-pre-wrap"
+                                            on:beforeinput=move |ev: web_sys::InputEvent| {
+                                                let input_type = ev.input_type();
+                                                if is_composing.get_untracked() {
+                                                    return;
+                                                }
+                                                let Some(el) = ev
+                                                    .target()
+                                                    .and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
+                                                else {
+                                                    return;
+                                                };
+
+                                                let (start_utf16, end_utf16, _len) = ce_selection_utf16(&el);
+                                                let current = ce_view_text(&el);
+                                                let is_insert_text_input = input_type == "insertText";
+                                                let is_insert_from_drop = input_type == "insertFromDrop";
+
+                                                let state = EditorState::new(current, start_utf16);
+                                                let next_state = if is_insert_text_input {
+                                                    reduce_editor_state(
+                                                        &state,
+                                                        EditorIntent::ReplaceRange {
+                                                            start_utf16,
+                                                            end_utf16,
+                                                            text: ev.data().unwrap_or_default(),
+                                                        },
+                                                    )
+                                                } else if is_insert_from_drop {
+                                                    reduce_editor_state(
+                                                        &state,
+                                                        EditorIntent::ReplaceRange {
+                                                            start_utf16,
+                                                            end_utf16,
+                                                            text: ev
+                                                                .data_transfer()
+                                                                .and_then(|d| d.get_data("text/plain").ok())
+                                                                .unwrap_or_default(),
+                                                        },
+                                                    )
+                                                } else if start_utf16 != end_utf16
+                                                    && (input_type == "deleteContentBackward"
+                                                        || input_type == "deleteContentForward")
+                                                {
+                                                    reduce_editor_state(
+                                                        &state,
+                                                        EditorIntent::ReplaceRange {
+                                                            start_utf16,
+                                                            end_utf16,
+                                                            text: String::new(),
+                                                        },
+                                                    )
+                                                } else if input_type == "deleteContentBackward" {
+                                                    reduce_editor_state(&state, EditorIntent::Backspace)
+                                                } else if input_type == "deleteContentForward" {
+                                                    reduce_editor_state(&state, EditorIntent::Delete)
+                                                } else {
+                                                    return;
+                                                };
+                                                ev.prevent_default();
+                                                op_applied_in_this_turn.set(true);
+                                                shift_enter_return_caret.set(None);
+                                                ce_set_text(&el, &next_state.text);
+                                                ce_set_caret_utf16(&el, next_state.caret_utf16);
+                                                editing_value.set(next_state.text.clone());
+
+                                                let nav_id = nav_id_sv.get_value();
+                                                let _ = sync_sv.try_with_value(|s| s.on_nav_changed(&nav_id, &next_state.text));
+                                            }
+                                            on:paste=move |ev: web_sys::ClipboardEvent| {
+                                                if is_composing.get_untracked() {
+                                                    return;
+                                                }
+
+                                                let Some(el) = ev
+                                                    .target()
+                                                    .and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
+                                                else {
+                                                    return;
+                                                };
+
+                                                let text = ev
+                                                    .clipboard_data()
+                                                    .and_then(|d| d.get_data("text/plain").ok())
+                                                    .unwrap_or_default();
+
+                                                if text.is_empty() {
+                                                    return;
+                                                }
+
+                                                ev.prevent_default();
+                                                let (start_utf16, end_utf16, _len) = ce_selection_utf16(&el);
+                                                let current = ce_view_text(&el);
+                                                let next_state = reduce_editor_state(
+                                                    &EditorState::new(current, start_utf16),
+                                                    EditorIntent::ReplaceRange {
+                                                        start_utf16,
+                                                        end_utf16,
+                                                        text: text.clone(),
+                                                    },
+                                                );
+                                                op_applied_in_this_turn.set(true);
+                                                shift_enter_return_caret.set(None);
+                                                ce_set_text(&el, &next_state.text);
+                                                ce_set_caret_utf16(&el, next_state.caret_utf16);
+                                                editing_value.set(next_state.text.clone());
+                                                let nav_id = nav_id_sv.get_value();
+                                                let _ = sync_sv.try_with_value(|s| s.on_nav_changed(&nav_id, &next_state.text));
+                                            }
                                             on:input=move |ev: web_sys::Event| {
                                                 let Some(el) = ev
                                                     .target()
@@ -2591,18 +3052,20 @@ pub fn OutlineNode(
                                                 };
 
                                                 let (caret_utf16, _caret_end_utf16, _len_before) = ce_selection_utf16(&el);
-                                                let v = ce_text(&el);
-                                                editing_value.set(v.clone());
-
-                                                // Keep browser-native caret behavior in all typing scenarios.
-                                                // Avoid mutating contenteditable DOM on each input event; that can
-                                                // cause caret drift/jumps around line breaks.
-
-                                                let nav_id = nav_id_sv.get_value();
-
-                                                // Local-first write + debounced autosave via global controller.
-                                                // (Single entrypoint: avoid UI-level direct draft writes.)
-                                                let _ = sync_sv.try_with_value(|s| s.on_nav_changed(&nav_id, &v));
+                                                let handled_by_op = op_applied_in_this_turn.get_untracked();
+                                                if handled_by_op {
+                                                    op_applied_in_this_turn.set(false);
+                                                }
+                                                shift_enter_return_caret.set(None);
+                                                let v = if handled_by_op {
+                                                    editing_value.get_untracked()
+                                                } else {
+                                                    let v = ce_text(&el);
+                                                    editing_value.set(v.clone());
+                                                    let nav_id = nav_id_sv.get_value();
+                                                    let _ = sync_sv.try_with_value(|s| s.on_nav_changed(&nav_id, &v));
+                                                    v
+                                                };
 
                                                 // Autocomplete: detect an unclosed `[[...` immediately before the caret.
                                                 let caret_byte = utf16_to_byte_idx(&v, caret_utf16);
@@ -2882,7 +3345,7 @@ pub fn OutlineNode(
 
                                                 // Helpers for bidirectional-link navigation
 
-                                                let save_current = |nav_id_now: &str, _note_id_now: &str| {
+                                                let save_current = |nav_id_now: &str| {
                                                     let current_content = editing_value.get_untracked();
                                                     navs.update(|xs| {
                                                         if let Some(x) = xs.iter_mut().find(|x| x.id == nav_id_now) {
@@ -2925,7 +3388,6 @@ pub fn OutlineNode(
                                                     target_cursor_col.set(Some(cursor_col));
 
                                                     let nav_id_now = nav_id_sv.get_value();
-                                                    let _note_id_now = note_id_sv.get_value();
                                                     let current_content = editing_value.get_untracked();
 
                                                     let all = navs.get_untracked();
@@ -3013,8 +3475,7 @@ pub fn OutlineNode(
                                                     ev.prevent_default();
 
                                                     let nav_id_now = nav_id_sv.get_value();
-                                                    let note_id_now = note_id_sv.get_value();
-                                                    save_current(&nav_id_now, &note_id_now);
+                                                    save_current(&nav_id_now);
 
                                                     let all = navs.get_untracked();
                                                     let visible = visible_preorder(&all);
@@ -3066,7 +3527,6 @@ pub fn OutlineNode(
                                                         let (_line_idx, cursor_col) = utf16_line_col_at_pos(&current_text, cursor_pos);
 
                                                         let nav_id_now = nav_id_sv.get_value();
-                                                        let note_id_now = note_id_sv.get_value();
                                                         let all = navs.get_untracked();
                                                         let visible = visible_preorder(&all);
 
@@ -3088,7 +3548,7 @@ pub fn OutlineNode(
 
                                                         if let Some(next_id) = next_id {
                                                             ev.prevent_default();
-                                                            save_current(&nav_id_now, &note_id_now);
+                                                            save_current(&nav_id_now);
 
                                                             if let Some(next_nav) = all.iter().find(|n| n.id == next_id) {
                                                                 let target_pos = if key == "ArrowUp" {
@@ -3131,7 +3591,6 @@ pub fn OutlineNode(
                                                 // Arrow Left/Right: jump to prev/next visible node at boundaries
                                                 if key == "ArrowLeft" || key == "ArrowRight" {
                                                     let nav_id_now = nav_id_sv.get_value();
-                                                    let note_id_now = note_id_sv.get_value();
 
                                                     let (cursor_start, cursor_end, len) = if let Some(i) = input() {
                                                         ce_selection_utf16(&i)
@@ -3147,7 +3606,7 @@ pub fn OutlineNode(
                                                     if key == "ArrowLeft" && cursor_start == 0 {
                                                         ev.prevent_default();
                                                         target_cursor_col.set(None);
-                                                        save_current(&nav_id_now, &note_id_now);
+                                                        save_current(&nav_id_now);
 
                                                         let all = navs.get_untracked();
                                                         let Some(me) = all.iter().find(|n| n.id == nav_id_now) else {
@@ -3220,7 +3679,7 @@ pub fn OutlineNode(
                                                     if key == "ArrowRight" && cursor_start == len {
                                                         ev.prevent_default();
                                                         target_cursor_col.set(None);
-                                                        save_current(&nav_id_now, &note_id_now);
+                                                        save_current(&nav_id_now);
 
                                                         let all = navs.get_untracked();
 
@@ -3260,12 +3719,6 @@ pub fn OutlineNode(
                                                                 {
                                                                     let _ = sync_sv.try_with_value(|s| s.on_nav_meta_changed(&n));
                                                                 }
-
-                                                                editing_id.set(Some(first_child.id.clone()));
-                                                                editing_value.set(first_child.content.clone());
-                                                                editing_snapshot.set(Some((first_child.id.clone(), first_child.content.clone())));
-                                                                target_cursor_col.set(Some(0));
-                                                                return;
                                                             }
 
                                                             // Move into first child.
@@ -3287,7 +3740,6 @@ pub fn OutlineNode(
 
                                                     let shift = ev.shift_key();
                                                     let nav_id_now = nav_id_sv.get_value();
-                                                    let _note_id_now = note_id_sv.get_value();
 
                                                     let all = navs.get_untracked();
                                                     let Some(me) = all.iter().find(|x| x.id == nav_id_now) else {
@@ -3427,55 +3879,26 @@ pub fn OutlineNode(
                                                     .unwrap_or_else(|| editing_value.get_untracked());
 
                                                 // Outline-style delete:
-                                                // Outline-style delete (trailing break aware):
-                                                // - We maintain a trailing `<br data-trailing-break="1">` placeholder for caret.
+                                                // Outline-style delete (trailing anchor aware):
+                                                // - We maintain a trailing `<span data-caret-anchor="1">` for caret rendering.
                                                 //   It is NOT user content.
-                                                // - If the node has semantic soft breaks (`<br>` without the marker) but no text,
+                                                // - If the node has semantic soft breaks (`<br>`) but no text,
                                                 //   Backspace/Delete removes one break at a time.
-                                                // - Once only the trailing placeholder remains (no semantic breaks, no text),
+                                                // - Once no semantic breaks remain (no text),
                                                 //   Backspace/Delete deletes the node.
                                                 let (semantic_br_count, has_any_text) = input()
                                                     .as_ref()
-                                                    .and_then(|el| {
-                                                        fn is_empty_text_node(n: &web_sys::Node) -> bool {
-                                                            n.node_type() == web_sys::Node::TEXT_NODE
-                                                                && n.text_content().unwrap_or_default().trim().is_empty()
-                                                        }
-
-                                                        let root: web_sys::Node = el.clone().unchecked_into();
-
-                                                        // Find the last non-empty child node.
-                                                        let mut last_nonempty: Option<web_sys::Node> = None;
-                                                        let kids = root.child_nodes();
-                                                        for i in 0..kids.length() {
-                                                            if let Some(n) = kids.get(i) {
-                                                                if is_empty_text_node(&n) {
-                                                                    continue;
-                                                                }
-                                                                last_nonempty = Some(n);
-                                                            }
-                                                        }
-
-                                                        let total_br = el
-                                                            .query_selector_all("br")
-                                                            .ok()
-                                                            .map(|l| l.length())
-                                                            .unwrap_or(0);
-
-                                                        let has_trailing_placeholder_br = last_nonempty
-                                                            .as_ref()
-                                                            .and_then(|n| n.dyn_ref::<web_sys::Element>())
-                                                            .map(|e| e.tag_name().to_uppercase() == "BR")
-                                                            .unwrap_or(false);
-
-                                                        let semantic = effective_semantic_br_count(
-                                                            total_br,
-                                                            has_trailing_placeholder_br,
-                                                        );
-
-                                                        let txt = ce_text(el);
-                                                        let has_text = has_any_text_content(&txt);
-                                                        Some((semantic, has_text))
+                                                    .map(|el| {
+                                                        let snapshot = ce_snapshot(el);
+                                                        let semantic = snapshot
+                                                            .atoms
+                                                            .iter()
+                                                            .filter(|a| matches!(a, EditorAtom::SoftBreak))
+                                                            .count()
+                                                            as u32;
+                                                        let has_text =
+                                                            has_any_text_content(&snapshot.persisted_text);
+                                                        (semantic, has_text)
                                                     })
                                                     .unwrap_or((0, has_any_text_content(&v_now)));
 
@@ -3487,13 +3910,11 @@ pub fn OutlineNode(
                                                     ev.prevent_default();
 
                                                     // Remove one semantic soft break at a time.
-                                                    // In our model, the trailing placeholder break is always the last BR.
                                                     if let Some(el) = input() {
-                                                        if let Ok(list) = el.query_selector_all("br") {
+                                                        if let Ok(list) = el.query_selector_all("br:not([data-trailing-break='1'])") {
                                                             let len = list.length();
-                                                            if len >= 2 {
-                                                                // Remove the br right before the trailing placeholder.
-                                                                if let Some(to_remove) = list.get(len - 2) {
+                                                            if len >= 1 {
+                                                                if let Some(to_remove) = list.get(len - 1) {
                                                                     let _ = to_remove
                                                                         .parent_node()
                                                                         .and_then(|p| p.remove_child(&to_remove).ok());
@@ -3501,11 +3922,11 @@ pub fn OutlineNode(
                                                             }
                                                         }
 
-                                                        // Re-normalize trailing placeholder.
+                                                        // Re-normalize trailing caret anchor.
                                                         let doc = web_sys::window().and_then(|w| w.document());
                                                         if let Some(doc) = doc {
                                                             let root: web_sys::Node = el.clone().unchecked_into();
-                                                            let _ = ensure_trailing_break(&doc, &root);
+                                                            let _ = ensure_trailing_caret_anchor(&doc, &root);
                                                         }
 
                                                         // Keep caret at end.
@@ -3592,52 +4013,102 @@ pub fn OutlineNode(
                                                     return;
                                                 }
 
+                                                if key == "Backspace" || key == "Delete" {
+                                                    let (current_text, caret_start) = input()
+                                                        .as_ref()
+                                                        .map(|el| {
+                                                            let txt = ce_view_text(el);
+                                                            let (start, _end, _len) = ce_selection_utf16(el);
+                                                            (txt, start)
+                                                        })
+                                                        .unwrap_or_else(|| {
+                                                            let txt = editing_value.get_untracked();
+                                                            let pos = txt.encode_utf16().count() as u32;
+                                                            (txt, pos)
+                                                        });
+
+                                                    let current_state = EditorState {
+                                                        text: current_text.clone(),
+                                                        caret_utf16: caret_start,
+                                                        remembered_caret_utf16: shift_enter_return_caret
+                                                            .get_untracked(),
+                                                    };
+                                                    let intent = if key == "Backspace" {
+                                                        EditorIntent::Backspace
+                                                    } else {
+                                                        EditorIntent::Delete
+                                                    };
+                                                    let next = reduce_editor_state(&current_state, intent);
+                                                    if next.text != current_state.text
+                                                        || next.caret_utf16 != current_state.caret_utf16
+                                                    {
+                                                        ev.prevent_default();
+                                                        if let Some(el) = input() {
+                                                            if next.text != current_state.text {
+                                                                ce_set_text(&el, &next.text);
+                                                            }
+                                                            ce_set_caret_utf16(&el, next.caret_utf16);
+                                                            editing_value.set(next.text.clone());
+                                                            shift_enter_return_caret
+                                                                .set(next.remembered_caret_utf16);
+                                                            target_cursor_col.set(Some(next.caret_utf16));
+
+                                                            let nav_id_now = nav_id_sv.get_value();
+                                                            let _ = sync_sv.try_with_value(|s| {
+                                                                s.on_nav_changed(&nav_id_now, &next.text);
+                                                            });
+                                                        }
+                                                        return;
+                                                    }
+                                                }
+
                                                 // Enter behavior policy: soft line break vs split nav.
-                                                let (total_lines, is_first_line) = input()
+                                                let (caret_start_for_enter, view_text_for_enter) = input()
                                                     .as_ref()
                                                     .map(|el| {
-                                                        // First-line detection based on caret byte position relative to
-                                                        // the first newline in plain text.
-                                                        let txt = ce_text(el);
+                                                        // Use view text + line info (not persisted text) so Enter behavior
+                                                        // follows live multiline caret position.
+                                                        let txt = ce_view_text(el);
                                                         let (caret_start, _caret_end, _len) = ce_selection_utf16(el);
-                                                        let caret_byte = utf16_to_byte_idx(&txt, caret_start).min(txt.len());
-                                                        let is_first = txt
-                                                            .find('\n')
-                                                            .map(|first_nl| caret_byte <= first_nl)
-                                                            .unwrap_or(true);
-
-                                                        let total = txt.split('\n').count().max(1) as u32;
-                                                        (total, is_first)
+                                                        (caret_start, txt)
                                                     })
-                                                    .unwrap_or((1, true));
+                                                    .unwrap_or((0, String::new()));
 
-                                                let has_soft_break_context =
-                                                    semantic_br_count > 0
-                                                        || v_now.contains('\n')
-                                                        || total_lines > 1;
-
-                                                let mut enter_flags: EnterActionFlags = 0;
                                                 if key == "Enter" {
-                                                    enter_flags |= ENTER_FLAG_IS_ENTER_KEY;
-                                                }
-                                                if ev.shift_key() {
-                                                    enter_flags |= ENTER_FLAG_SHIFT_PRESSED;
-                                                }
-                                                if has_soft_break_context {
-                                                    enter_flags |= ENTER_FLAG_HAS_MULTILINE_CONTEXT;
-                                                }
-                                                if is_first_line {
-                                                    enter_flags |= ENTER_FLAG_CARET_ON_FIRST_LINE;
-                                                }
+                                                    let state = EditorState {
+                                                        text: view_text_for_enter.clone(),
+                                                        caret_utf16: caret_start_for_enter,
+                                                        remembered_caret_utf16: shift_enter_return_caret
+                                                            .get_untracked(),
+                                                    };
+                                                    let next = reduce_editor_state(
+                                                        &state,
+                                                        EditorIntent::Enter {
+                                                            shift: ev.shift_key(),
+                                                        },
+                                                    );
 
-                                                let enter_behavior = resolve_nav_enter_action(enter_flags);
+                                                    if next.text != state.text || next.caret_utf16 != state.caret_utf16 {
+                                                        ev.prevent_default();
+                                                        if let Some(el) = input() {
+                                                            if next.text != state.text {
+                                                                ce_set_text(&el, &next.text);
+                                                            }
+                                                            ce_set_caret_utf16(&el, next.caret_utf16);
+                                                            editing_value.set(next.text.clone());
+                                                            shift_enter_return_caret
+                                                                .set(next.remembered_caret_utf16);
+                                                            target_cursor_col.set(Some(next.caret_utf16));
 
-                                                if enter_behavior == Some(EnterBehavior::SoftBreak) {
-                                                    return;
-                                                }
+                                                            let nav_id_now = nav_id_sv.get_value();
+                                                            let _ = sync_sv.try_with_value(|s| {
+                                                                s.on_nav_changed(&nav_id_now, &next.text);
+                                                            });
+                                                        }
+                                                        return;
+                                                    }
 
-                                                // Enter: split at caret + create next sibling with trailing text.
-                                                if enter_behavior == Some(EnterBehavior::SplitNav) {
+                                                    // Enter: split at caret + create next sibling with trailing text.
                                                     ev.prevent_default();
 
                                                     let nav_id_now = nav_id_sv.get_value();
@@ -4294,39 +4765,6 @@ mod editor_delete_behavior_tests {
         let ids: Vec<String> = merged.into_iter().map(|n| n.id).collect();
 
         assert_eq!(ids, vec!["aa".to_string(), "cc".to_string()]);
-    }
-
-    fn enter_input(flags: &[EnterActionFlags]) -> EnterActionFlags {
-        flags.iter().copied().fold(0, |acc, f| acc | f)
-    }
-
-    #[test]
-    fn test_resolve_nav_enter_action_shift_enter_soft_break() {
-        let b = resolve_nav_enter_action(enter_input(&[
-            ENTER_FLAG_IS_ENTER_KEY,
-            ENTER_FLAG_SHIFT_PRESSED,
-            ENTER_FLAG_CARET_ON_FIRST_LINE,
-        ]));
-        assert_eq!(b, Some(EnterBehavior::SoftBreak));
-    }
-
-    #[test]
-    fn test_resolve_nav_enter_action_non_first_line_soft_break() {
-        let b = resolve_nav_enter_action(enter_input(&[
-            ENTER_FLAG_IS_ENTER_KEY,
-            ENTER_FLAG_HAS_MULTILINE_CONTEXT,
-        ]));
-        assert_eq!(b, Some(EnterBehavior::SoftBreak));
-    }
-
-    #[test]
-    fn test_resolve_nav_enter_action_first_line_split_nav() {
-        let b = resolve_nav_enter_action(enter_input(&[
-            ENTER_FLAG_IS_ENTER_KEY,
-            ENTER_FLAG_HAS_MULTILINE_CONTEXT,
-            ENTER_FLAG_CARET_ON_FIRST_LINE,
-        ]));
-        assert_eq!(b, Some(EnterBehavior::SplitNav));
     }
 
     #[test]

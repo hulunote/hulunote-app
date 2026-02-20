@@ -696,3 +696,203 @@ mod tests {
         assert!(pending.contains("content-only"));
     }
 }
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod wasm_tests {
+    use super::*;
+    use crate::api::ApiClient;
+    use crate::drafts::{
+        load_note_snapshot, mark_navs_deleted_in_snapshot, reconcile_local_nav_meta,
+        resolve_local_nav_content, save_note_snapshot,
+    };
+    use crate::models::Nav;
+    use crate::util::ROOT_CONTAINER_PARENT_ID;
+    use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    #[wasm_bindgen_test]
+    fn test_note_draft_nav_and_title_resolution_with_synced_ms_gate() {
+        let db_id = "db-test";
+        let note_id = "note-test";
+        let nav_id = "nav-test";
+        let nav_id2 = "nav-test-2";
+
+        if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+            let _ = storage.remove_item(&format!("hulunote_draft_note::{db_id}::{note_id}"));
+        }
+        ApiClient::clear_storage();
+
+        touch_title(db_id, note_id, "t1");
+        assert_eq!(resolve_local_note_title(db_id, note_id, "server"), "t1");
+
+        mark_title_synced(db_id, note_id, i64::MAX);
+        assert_eq!(resolve_local_note_title(db_id, note_id, "server"), "server");
+
+        touch_nav(db_id, note_id, nav_id, "c1");
+        assert_eq!(resolve_local_nav_content(db_id, note_id, nav_id, "sv"), "c1");
+
+        mark_nav_synced(db_id, note_id, nav_id, i64::MAX);
+        assert_eq!(resolve_local_nav_content(db_id, note_id, nav_id, "sv"), "sv");
+
+        touch_nav(db_id, note_id, nav_id2, "c2");
+        assert_eq!(
+            resolve_local_nav_content(db_id, note_id, nav_id2, "sv2"),
+            "c2"
+        );
+
+        if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+            let _ = storage.remove_item(&format!("hulunote_draft_note::{db_id}::{note_id}"));
+        }
+        ApiClient::clear_storage();
+    }
+
+    #[wasm_bindgen_test]
+    fn test_refresh_rebuild_prefers_local_unsynced_nav_content() {
+        let db_id = "db-refresh-content";
+        let note_id = "note-refresh-content";
+        let nav_id = "aa";
+
+        if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+            let _ = storage.remove_item(&format!("hulunote_draft_note::{db_id}::{note_id}"));
+        }
+        ApiClient::clear_storage();
+
+        let mut rebuilt = vec![Nav {
+            id: nav_id.to_string(),
+            note_id: note_id.to_string(),
+            parid: ROOT_CONTAINER_PARENT_ID.to_string(),
+            same_deep_order: 1.0,
+            content: "server-old".to_string(),
+            is_display: true,
+            is_delete: false,
+            properties: None,
+        }];
+
+        touch_nav(db_id, note_id, nav_id, "local-new");
+
+        for n in rebuilt.iter_mut() {
+            n.content = resolve_local_nav_content(db_id, note_id, &n.id, &n.content);
+        }
+
+        assert_eq!(
+            rebuilt[0].content, "local-new",
+            "refresh rebuild should show latest local draft content immediately"
+        );
+
+        if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+            let _ = storage.remove_item(&format!("hulunote_draft_note::{db_id}::{note_id}"));
+        }
+        ApiClient::clear_storage();
+    }
+
+    #[wasm_bindgen_test]
+    fn test_snapshot_delete_and_meta_reconcile_survive_refresh_rebuild() {
+        let db_id = "db-refresh";
+        let note_id = "note-refresh";
+
+        if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+            let _ = storage.remove_item(&format!("hulunote_note_snapshot::{db_id}::{note_id}"));
+            let _ = storage.remove_item(&format!("hulunote_draft_note::{db_id}::{note_id}"));
+        }
+
+        let nav_aa = Nav {
+            id: "aa".to_string(),
+            note_id: note_id.to_string(),
+            parid: ROOT_CONTAINER_PARENT_ID.to_string(),
+            same_deep_order: 1.0,
+            content: "aa".to_string(),
+            is_display: true,
+            is_delete: false,
+            properties: None,
+        };
+        let nav_bb = Nav {
+            id: "bb".to_string(),
+            note_id: note_id.to_string(),
+            parid: ROOT_CONTAINER_PARENT_ID.to_string(),
+            same_deep_order: 2.0,
+            content: "bb".to_string(),
+            is_display: true,
+            is_delete: false,
+            properties: None,
+        };
+        let nav_cc = Nav {
+            id: "cc".to_string(),
+            note_id: note_id.to_string(),
+            parid: ROOT_CONTAINER_PARENT_ID.to_string(),
+            same_deep_order: 3.0,
+            content: "cc".to_string(),
+            is_display: true,
+            is_delete: false,
+            properties: None,
+        };
+
+        save_note_snapshot(
+            db_id,
+            note_id,
+            Some("note-refresh".to_string()),
+            vec![nav_aa.clone(), nav_bb.clone(), nav_cc.clone()],
+            crate::util::now_ms(),
+        );
+        mark_navs_deleted_in_snapshot(db_id, note_id, &["bb".to_string()]);
+
+        let mut bb_meta = nav_bb.clone();
+        bb_meta.is_delete = true;
+        touch_nav_meta(db_id, note_id, &bb_meta);
+
+        let mut rebuilt = load_note_snapshot(db_id, note_id)
+            .expect("snapshot exists")
+            .navs;
+        reconcile_local_nav_meta(db_id, note_id, &mut rebuilt);
+
+        let bb = rebuilt
+            .iter()
+            .find(|n| n.id == "bb")
+            .expect("bb should exist in rebuilt list");
+        let cc = rebuilt
+            .iter()
+            .find(|n| n.id == "cc")
+            .expect("cc should exist in rebuilt list");
+
+        assert!(bb.is_delete);
+        assert_eq!(cc.content, "cc");
+
+        if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+            let _ = storage.remove_item(&format!("hulunote_note_snapshot::{db_id}::{note_id}"));
+            let _ = storage.remove_item(&format!("hulunote_draft_note::{db_id}::{note_id}"));
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn test_meta_only_draft_appears_in_due_meta_queue() {
+        let db_id = "db-meta-queue";
+        let note_id = "note-meta-queue";
+
+        if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+            let _ = storage.remove_item(&format!("hulunote_draft_note::{db_id}::{note_id}"));
+        }
+
+        let nav = Nav {
+            id: "meta-only".to_string(),
+            note_id: note_id.to_string(),
+            parid: ROOT_CONTAINER_PARENT_ID.to_string(),
+            same_deep_order: 1.0,
+            content: String::new(),
+            is_display: true,
+            is_delete: true,
+            properties: None,
+        };
+        touch_nav_meta(db_id, note_id, &nav);
+
+        let due = get_due_unsynced_nav_meta_drafts(db_id, note_id, i64::MAX, 10);
+        assert!(
+            due.iter()
+                .any(|(id, meta, _)| id == "meta-only" && meta.is_delete),
+            "meta-only delete draft should be scheduled in meta queue"
+        );
+
+        if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+            let _ = storage.remove_item(&format!("hulunote_draft_note::{db_id}::{note_id}"));
+        }
+    }
+}

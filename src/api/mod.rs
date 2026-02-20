@@ -671,3 +671,29 @@ impl ApiClient {
         out
     }
 }
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod wasm_tests {
+    use super::*;
+    use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    #[wasm_bindgen_test]
+    fn test_api_client_storage_roundtrip_token() {
+        ApiClient::clear_storage();
+
+        let mut c = ApiClient::load_from_storage();
+        assert!(!c.is_authenticated());
+
+        c.set_token("t1".to_string());
+        c.save_to_storage();
+
+        let c2 = ApiClient::load_from_storage();
+        assert_eq!(c2.get_auth_token().as_deref(), Some("t1"));
+
+        ApiClient::clear_storage();
+        let c3 = ApiClient::load_from_storage();
+        assert!(c3.get_auth_token().is_none());
+    }
+}
