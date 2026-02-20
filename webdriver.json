@@ -1,0 +1,14 @@
+{
+  "capabilities": {
+    "alwaysMatch": {
+      "goog:chromeOptions": {
+        "args": [
+          "--headless=new",
+          "--disable-gpu",
+          "--no-sandbox",
+          "--disable-dev-shm-usage"
+        ]
+      }
+    }
+  }
+}
