@@ -2236,35 +2236,11 @@ pub fn OutlineNode(
                             {if has_kids {
                                 view! {
                                     <div class="relative self-start mt-px h-[24px] w-5 inline-flex items-center justify-center text-muted-foreground">
-                                        {if n.is_display {
-                                            view! {
-                                                <svg viewBox="0 0 20 20" class="h-5 w-5" fill="currentColor" aria-hidden="true">
-                                                    <circle cx="10" cy="10" r="3"></circle>
-                                                </svg>
-                                            }
-                                            .into_any()
-                                        } else {
-                                            view! {
-                                                <svg viewBox="0 0 20 20" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
-                                                    <circle cx="10" cy="10" r="3"></circle>
-                                                </svg>
-                                            }
-                                            .into_any()
-                                        }}
-
                                         <button
-                                            class=marker_class
+                                            class="self-start mt-px h-[24px] w-5 inline-flex items-center justify-center text-muted-foreground cursor-grab active:cursor-grabbing"
                                             draggable="true"
                                             on:dragstart=move |ev: web_sys::DragEvent| {
                                                 let id = nav_id_sv.get_value();
-
-                                                // UX: dragging should not keep the row in editing state.
-                                                if editing_id.get_untracked().as_deref() == Some(id.as_str()) {
-                                                    editing_id.set(None);
-                                                    // Close autocomplete if it was open.
-                                                    ac.ac_open.set(false);
-                                                    ac.ac_start_utf16.set(None);
-                                                }
 
                                                 dragging_nav_id.set(Some(id.clone()));
                                                 drag_over_nav_id.set(Some(id.clone()));
@@ -2273,13 +2249,11 @@ pub fn OutlineNode(
                                                     let _ = dt.set_data("text/plain", &id);
                                                     dt.set_drop_effect("move");
 
-                                                    // Show the whole row as the drag preview (not just the bullet).
                                                     if let Some(row) = ev
                                                         .current_target()
                                                         .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
                                                         .and_then(|el| el.closest(".outline-row").ok().flatten())
                                                     {
-                                                        // Anchor the drag preview under the cursor to avoid the "jump" feeling.
                                                         let rect = row.get_bounding_client_rect();
                                                         let ox = ((ev.client_x() as f64) - rect.left()).round() as i32;
                                                         let oy = ((ev.client_y() as f64) - rect.top()).round() as i32;
@@ -2291,17 +2265,27 @@ pub fn OutlineNode(
                                                 dragging_nav_id.set(None);
                                                 drag_over_nav_id.set(None);
                                             }
-                                            on:mousedown=move |ev: web_sys::MouseEvent| {
-                                                // Handle toggle on mousedown to avoid edit-surface focus/selection
-                                                // interference swallowing click while a node is being edited.
-                                                ev.prevent_default();
-                                                ev.stop_propagation();
-                                                on_toggle_cb.run(ev);
-                                            }
-                                            on:click=move |ev: web_sys::MouseEvent| {
-                                                ev.prevent_default();
-                                                ev.stop_propagation();
-                                            }
+                                        >
+                                            {if n.is_display {
+                                                view! {
+                                                    <svg viewBox="0 0 20 20" class="h-5 w-5" fill="currentColor" aria-hidden="true">
+                                                        <circle cx="10" cy="10" r="3"></circle>
+                                                    </svg>
+                                                }
+                                                .into_any()
+                                            } else {
+                                                view! {
+                                                    <svg viewBox="0 0 20 20" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                                                        <circle cx="10" cy="10" r="3"></circle>
+                                                    </svg>
+                                                }
+                                                .into_any()
+                                            }}
+                                        </button>
+
+                                        <button
+                                            class=marker_class
+                                            on:click=move |ev| on_toggle_cb.run(ev)
                                         >
                                             {marker_view}
                                         </button>
@@ -2310,11 +2294,40 @@ pub fn OutlineNode(
                                 .into_any()
                             } else {
                                 view! {
-                                    <span class="self-start mt-px h-[24px] w-5 inline-flex items-center justify-center text-muted-foreground">
+                                    <button
+                                        class="self-start mt-px h-[24px] w-5 inline-flex items-center justify-center text-muted-foreground cursor-grab active:cursor-grabbing"
+                                        draggable="true"
+                                        on:dragstart=move |ev: web_sys::DragEvent| {
+                                            let id = nav_id_sv.get_value();
+
+                                            dragging_nav_id.set(Some(id.clone()));
+                                            drag_over_nav_id.set(Some(id.clone()));
+
+                                            if let Some(dt) = ev.data_transfer() {
+                                                let _ = dt.set_data("text/plain", &id);
+                                                dt.set_drop_effect("move");
+
+                                                if let Some(row) = ev
+                                                    .current_target()
+                                                    .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                                                    .and_then(|el| el.closest(".outline-row").ok().flatten())
+                                                {
+                                                    let rect = row.get_bounding_client_rect();
+                                                    let ox = ((ev.client_x() as f64) - rect.left()).round() as i32;
+                                                    let oy = ((ev.client_y() as f64) - rect.top()).round() as i32;
+                                                    dt.set_drag_image(&row, ox, oy);
+                                                }
+                                            }
+                                        }
+                                        on:dragend=move |_ev: web_sys::DragEvent| {
+                                            dragging_nav_id.set(None);
+                                            drag_over_nav_id.set(None);
+                                        }
+                                    >
                                         <svg viewBox="0 0 20 20" class="h-5 w-5" fill="currentColor" aria-hidden="true">
                                             <circle cx="10" cy="10" r="3"></circle>
                                         </svg>
-                                    </span>
+                                    </button>
                                 }
                                 .into_any()
                             }}
