@@ -595,7 +595,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_note_fully_synced_requires_meta_cleared() {
+    fn is_note_fully_synced_requires_meta_cleared() {
         let mut d = base_draft();
         d.nav_state.insert(
             "n1".to_string(),
@@ -614,7 +614,7 @@ mod tests {
     }
 
     #[test]
-    fn test_due_content_drafts_ignore_meta_only_rows() {
+    fn due_content_drafts_ignore_meta_only_rows() {
         let mut d = base_draft();
         d.nav_state.insert(
             "meta-only".to_string(),
@@ -653,7 +653,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pending_ids_include_meta_and_content_channels() {
+    fn pending_ids_include_meta_and_content_channels() {
         let mut d = base_draft();
         d.nav_state.insert(
             "meta-only".to_string(),
@@ -712,7 +712,7 @@ mod wasm_tests {
     wasm_bindgen_test_configure!(run_in_browser);
 
     #[wasm_bindgen_test]
-    fn test_note_draft_nav_and_title_resolution_with_synced_ms_gate() {
+    fn note_draft_nav_and_title_resolution_with_synced_ms_gate() {
         let db_id = "db-test";
         let note_id = "note-test";
         let nav_id = "nav-test";
@@ -748,7 +748,7 @@ mod wasm_tests {
     }
 
     #[wasm_bindgen_test]
-    fn test_refresh_rebuild_prefers_local_unsynced_nav_content() {
+    fn refresh_rebuild_prefers_local_unsynced_nav_content() {
         let db_id = "db-refresh-content";
         let note_id = "note-refresh-content";
         let nav_id = "aa";
@@ -787,7 +787,7 @@ mod wasm_tests {
     }
 
     #[wasm_bindgen_test]
-    fn test_snapshot_delete_and_meta_reconcile_survive_refresh_rebuild() {
+    fn snapshot_delete_and_meta_reconcile_survive_refresh_rebuild() {
         let db_id = "db-refresh";
         let note_id = "note-refresh";
 
@@ -864,7 +864,7 @@ mod wasm_tests {
     }
 
     #[wasm_bindgen_test]
-    fn test_meta_only_draft_appears_in_due_meta_queue() {
+    fn meta_only_draft_appears_in_due_meta_queue() {
         let db_id = "db-meta-queue";
         let note_id = "note-meta-queue";
 

@@ -352,11 +352,7 @@ pub(crate) fn serialize_editor_atoms_for_view(atoms: &[EditorAtom]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        apply_editor_op, decide_enter_action, reduce_editor_state,
-        serialize_editor_atoms_for_persist, serialize_editor_atoms_for_view, EditorAtom,
-        EditorIntent, EditorOp, EditorState, EnterAction, EnterContext,
-    };
+    use super::*;
 
     #[test]
     fn serialize_editor_atoms_keeps_intentional_empty_line() {

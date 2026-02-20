@@ -123,7 +123,7 @@ mod wasm_tests {
     wasm_bindgen_test_configure!(run_in_browser);
 
     #[wasm_bindgen_test]
-    fn test_user_storage_roundtrip() {
+    fn user_storage_roundtrip() {
         ApiClient::clear_storage();
 
         let user = AccountInfo {

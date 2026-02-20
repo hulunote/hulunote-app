@@ -38,7 +38,7 @@ mod tests {
     use crate::util::next_available_daily_note_title_for_date;
 
     #[test]
-    fn test_login_response_contract_deserialize() {
+    fn login_response_contract_deserialize() {
         // Contract based on hulunote-rust: handlers/auth.rs
         let json = r#"{
             "token": "jwt-token",
@@ -54,7 +54,7 @@ mod tests {
     }
 
     #[test]
-    fn test_signup_response_contract_deserialize() {
+    fn signup_response_contract_deserialize() {
         // Contract based on hulunote-rust: handlers/auth.rs
         let json = r#"{
             "token": "jwt-token",
@@ -70,7 +70,7 @@ mod tests {
     }
 
     #[test]
-    fn test_signup_request_serialization_includes_registration_code() {
+    fn signup_request_serialization_includes_registration_code() {
         let req = SignupRequest {
             email: "u@example.com".to_string(),
             username: "u".to_string(),
@@ -84,55 +84,19 @@ mod tests {
     }
 
     #[test]
-    fn test_api_client_new() {
-        let client = ApiClient::new("http://localhost:6689".to_string());
-        assert_eq!(client.base_url, "http://localhost:6689");
-        assert!(client.token.is_none());
-    }
-
-    #[test]
-    fn test_api_client_set_token() {
-        let mut client = ApiClient::new("http://localhost:6689".to_string());
-        client.set_token("test-token".to_string());
-        assert_eq!(client.token, Some("test-token".to_string()));
-    }
-
-    #[test]
-    fn test_api_client_get_auth_token_without_token() {
-        let client = ApiClient::new("http://localhost:6689".to_string());
+    fn api_client_auth_token_and_authenticated_contract() {
+        let mut client = ApiClient::new("http://example.test".to_string());
+        assert_eq!(client.base_url, "http://example.test");
         assert!(client.get_auth_token().is_none());
-    }
-
-    #[test]
-    fn test_api_client_get_auth_token_with_token() {
-        let mut client = ApiClient::new("http://localhost:6689".to_string());
-        client.set_token("my-jwt-token".to_string());
-        let token = client.get_auth_token().expect("Should have auth token");
-        assert_eq!(token, "my-jwt-token");
-    }
-
-    #[test]
-    fn test_api_client_no_refresh_token_support() {
-        // hulunote-rust does not expose refresh tokens.
-        let client = ApiClient::new("http://localhost:6689".to_string());
-        assert!(client.get_auth_token().is_none());
-    }
-
-    #[test]
-    fn test_api_client_is_authenticated_false() {
-        let client = ApiClient::new("http://localhost:6689".to_string());
         assert!(!client.is_authenticated());
-    }
 
-    #[test]
-    fn test_api_client_is_authenticated_true() {
-        let mut client = ApiClient::new("http://localhost:6689".to_string());
         client.set_token("my-jwt-token".to_string());
+        assert_eq!(client.get_auth_token().as_deref(), Some("my-jwt-token"));
         assert!(client.is_authenticated());
     }
 
     #[test]
-    fn test_apply_nav_content_updates_matching_nav() {
+    fn apply_nav_content_updates_matching_nav() {
         let mut navs = vec![
             Nav {
                 id: "a".to_string(),
@@ -162,7 +126,7 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_nav_content_returns_false_when_missing() {
+    fn apply_nav_content_returns_false_when_missing() {
         let mut navs = vec![Nav {
             id: "a".to_string(),
             note_id: "n".to_string(),
@@ -179,7 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_nav_content_returns_value() {
+    fn get_nav_content_returns_value() {
         let navs = vec![Nav {
             id: "a".to_string(),
             note_id: "n".to_string(),
@@ -196,13 +160,13 @@ mod tests {
     }
 
     #[test]
-    fn test_backfill_content_request_empty_skips() {
+    fn backfill_content_request_empty_skips() {
         assert!(backfill_content_request("n", "id", "").is_none());
         assert!(backfill_content_request("n", "id", "   ").is_none());
     }
 
     #[test]
-    fn test_backfill_content_request_builds_req() {
+    fn backfill_content_request_builds_req() {
         let req = backfill_content_request("n1", "id1", "hello")
             .expect("should build request for non-empty content");
         assert_eq!(req.note_id, "n1");
@@ -213,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_reorder_target_moves_across_parent_before_target() {
+    fn compute_reorder_target_moves_across_parent_before_target() {
         let all = vec![
             Nav {
                 id: "d".to_string(),
@@ -254,7 +218,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_reorder_target_moves_within_parent_after_target_between() {
+    fn compute_reorder_target_moves_within_parent_after_target_between() {
         let all = vec![
             Nav {
                 id: "a".to_string(),
@@ -308,7 +272,7 @@ mod tests {
     // The canonical database list shape is covered by `test_parse_database_list_response_legacy_shape`.
 
     #[test]
-    fn test_parse_database_list_response_legacy_shape() {
+    fn parse_database_list_response_legacy_shape() {
         let v = serde_json::json!({
             "database-list": [
                 {
@@ -332,7 +296,7 @@ mod tests {
     // The canonical note list shape is covered by `test_parse_note_list_response_legacy_shape_note_list`.
 
     #[test]
-    fn test_parse_note_list_response_legacy_shape_note_list() {
+    fn parse_note_list_response_legacy_shape_note_list() {
         let v = serde_json::json!({
             "note-list": [
                 {
@@ -354,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_note_list_response_skips_soft_deleted_notes() {
+    fn parse_note_list_response_skips_soft_deleted_notes() {
         let v = serde_json::json!({
             "note-list": [
                 {
@@ -382,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn test_next_available_daily_note_title_adds_suffix() {
+    fn next_available_daily_note_title_adds_suffix() {
         let base = "20260209";
 
         let notes = vec![
@@ -409,21 +373,21 @@ mod tests {
     }
 
     #[test]
-    fn test_upsert_lru_by_key_dedup_and_order() {
+    fn upsert_lru_by_key_dedup_and_order() {
         let items = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let out = upsert_lru_by_key(items, "b".to_string(), |x, y| x == y, 10);
         assert_eq!(out, vec!["b", "a", "c"]);
     }
 
     #[test]
-    fn test_upsert_lru_by_key_truncate() {
+    fn upsert_lru_by_key_truncate() {
         let items = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let out = upsert_lru_by_key(items, "d".to_string(), |x, y| x == y, 3);
         assert_eq!(out, vec!["d", "a", "b"]);
     }
 
     #[test]
-    fn test_recent_structs_serde_roundtrip() {
+    fn recent_structs_serde_roundtrip() {
         let db = RecentDb {
             id: "db1".to_string(),
             name: "My DB".to_string(),

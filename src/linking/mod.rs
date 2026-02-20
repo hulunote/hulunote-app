@@ -91,7 +91,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_bidirectional_tokens_mixed_text_and_links() {
+    fn parse_bidirectional_tokens_mixed_text_and_links() {
         let tokens = parse_bidirectional_tokens("A [[Page]] B [[Ref]]");
         assert_eq!(
             tokens,
@@ -105,7 +105,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_bidirectional_tokens_unclosed_link_is_text() {
+    fn parse_bidirectional_tokens_unclosed_link_is_text() {
         let tokens = parse_bidirectional_tokens("A [[Page");
         assert_eq!(
             tokens,
@@ -117,13 +117,13 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_bidirectional_links_skips_empty() {
+    fn extract_bidirectional_links_skips_empty() {
         let links = extract_bidirectional_links("[[A]] [[]] [[B]]");
         assert_eq!(links, vec!["A".to_string(), "B".to_string()]);
     }
 
     #[test]
-    fn test_normalize_outline_page_title_keeps_exact_text() {
+    fn normalize_outline_page_title_keeps_exact_text() {
         assert_eq!(normalize_outline_page_title(" Page "), " Page ".to_string());
     }
 }

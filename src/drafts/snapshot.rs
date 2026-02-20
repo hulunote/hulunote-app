@@ -97,7 +97,7 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_snapshot_tombstones_marks_only_targets() {
+    fn apply_snapshot_tombstones_marks_only_targets() {
         let mut navs = vec![nav("a", false), nav("b", false), nav("c", true)];
         let ids = vec!["b".to_string(), "c".to_string()];
 
@@ -110,7 +110,7 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_snapshot_tombstones_noop_when_already_deleted() {
+    fn apply_snapshot_tombstones_noop_when_already_deleted() {
         let mut navs = vec![nav("a", true)];
         let ids = vec!["a".to_string()];
 

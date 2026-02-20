@@ -680,7 +680,7 @@ mod wasm_tests {
     wasm_bindgen_test_configure!(run_in_browser);
 
     #[wasm_bindgen_test]
-    fn test_api_client_storage_roundtrip_token() {
+    fn api_client_storage_roundtrip_token() {
         ApiClient::clear_storage();
 
         let mut c = ApiClient::load_from_storage();

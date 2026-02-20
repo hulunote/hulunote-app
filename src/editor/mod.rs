@@ -1180,7 +1180,7 @@ mod wasm_tests {
     }
 
     #[wasm_bindgen_test]
-    fn test_exit_edit_mode_rules_focusout_and_mousedown() {
+    fn exit_edit_mode_rules_focusout_and_mousedown() {
         with_test_root(|root| {
             let doc = wasm_doc();
 
@@ -4378,7 +4378,7 @@ mod editor_delete_behavior_tests {
     use super::*;
 
     #[test]
-    fn test_collect_visible_preorder_ids_filters_deleted() {
+    fn collect_visible_preorder_ids_filters_deleted() {
         let note_id = "note".to_string();
         let root_parent = ROOT_CONTAINER_PARENT_ID.to_string();
 
@@ -4435,7 +4435,7 @@ mod editor_delete_behavior_tests {
     }
 
     #[test]
-    fn test_has_any_text_content() {
+    fn has_any_text_content_behavior() {
         assert!(!has_any_text_content(""));
         assert!(!has_any_text_content(" \n\t"));
         assert!(has_any_text_content("a"));
@@ -4443,7 +4443,7 @@ mod editor_delete_behavior_tests {
     }
 
     #[test]
-    fn test_effective_semantic_br_count() {
+    fn effective_semantic_br_count_behavior() {
         assert_eq!(effective_semantic_br_count(0, false), 0);
         assert_eq!(effective_semantic_br_count(0, true), 0);
         assert_eq!(effective_semantic_br_count(1, false), 1);
@@ -4452,7 +4452,7 @@ mod editor_delete_behavior_tests {
     }
 
     #[test]
-    fn test_split_at_utf16() {
+    fn split_at_utf16_behavior() {
         assert_eq!(
             split_at_utf16("hello world", 5),
             ("hello".to_string(), " world".to_string())
@@ -4471,7 +4471,7 @@ mod editor_delete_behavior_tests {
     }
 
     #[test]
-    fn test_outline_delete_state() {
+    fn outline_delete_state_behavior() {
         assert_eq!(
             outline_delete_state(true, 0),
             OutlineDeleteState::HasContent
@@ -4494,7 +4494,7 @@ mod editor_delete_behavior_tests {
     }
 
     #[test]
-    fn test_can_soft_delete_empty_nav_blocks_first_top_level() {
+    fn can_soft_delete_empty_nav_blocks_first_top_level() {
         let note_id = "n1".to_string();
         let root_parent = ROOT_CONTAINER_PARENT_ID.to_string();
 
@@ -4538,7 +4538,7 @@ mod editor_delete_behavior_tests {
     }
 
     #[test]
-    fn test_can_soft_delete_empty_nav_blocks_parent_with_children() {
+    fn can_soft_delete_empty_nav_blocks_parent_with_children() {
         let note_id = "n1".to_string();
         let root_parent = ROOT_CONTAINER_PARENT_ID.to_string();
 
@@ -4592,7 +4592,7 @@ mod editor_delete_behavior_tests {
     }
 
     #[test]
-    fn test_root_container_id_returns_all_when_multiple_root_candidates_exist() {
+    fn root_container_id_returns_all_when_multiple_root_candidates_exist() {
         let root_parent = ROOT_CONTAINER_PARENT_ID.to_string();
         let note_id = "n1".to_string();
 
@@ -4623,7 +4623,7 @@ mod editor_delete_behavior_tests {
     }
 
     #[test]
-    fn test_visible_preorder_ids_skip_root_container_row() {
+    fn visible_preorder_ids_skip_root_container_row() {
         let root_parent = ROOT_CONTAINER_PARENT_ID.to_string();
         let note_id = "n1".to_string();
 
@@ -4663,7 +4663,7 @@ mod editor_delete_behavior_tests {
     }
 
     #[test]
-    fn test_visible_top_level_nodes_skip_root_container() {
+    fn visible_top_level_nodes_skip_root_container() {
         let root_parent = ROOT_CONTAINER_PARENT_ID.to_string();
         let note_id = "n1".to_string();
 
@@ -4694,7 +4694,7 @@ mod editor_delete_behavior_tests {
     }
 
     #[test]
-    fn test_collect_preview_lines_skips_root_container_row() {
+    fn collect_preview_lines_skips_root_container_row() {
         let root_parent = ROOT_CONTAINER_PARENT_ID.to_string();
         let note_id = "n1".to_string();
 
@@ -4724,7 +4724,7 @@ mod editor_delete_behavior_tests {
     }
 
     #[test]
-    fn test_merge_server_with_pending_snapshot_keeps_only_pending_missing_navs() {
+    fn merge_server_with_pending_snapshot_keeps_only_pending_missing_navs() {
         let note_id = "n1".to_string();
         let server = vec![Nav {
             id: "aa".to_string(),
@@ -4768,7 +4768,7 @@ mod editor_delete_behavior_tests {
     }
 
     #[test]
-    fn test_split_nav_content_for_enter_keeps_lower_lines_on_first_line_split() {
+    fn split_nav_content_for_enter_keeps_lower_lines_on_first_line_split() {
         let src = "abc\nline2\nline3";
         // caret after "a" in first line
         let (left, right) = split_nav_content_for_enter(src, 1);
@@ -4777,7 +4777,7 @@ mod editor_delete_behavior_tests {
     }
 
     #[test]
-    fn test_split_nav_content_for_enter_second_line_keeps_default_split() {
+    fn split_nav_content_for_enter_second_line_keeps_default_split() {
         let src = "abc\nline2\nline3";
         // caret in second line after "li" -> UTF-16 pos: 3 + 1 + 2 = 6
         let (left, right) = split_nav_content_for_enter(src, 6);
@@ -4786,7 +4786,7 @@ mod editor_delete_behavior_tests {
     }
 
     #[test]
-    fn test_should_persist_nav_id() {
+    fn should_persist_nav_id_behavior() {
         assert!(!should_persist_nav_id(""));
         assert!(!should_persist_nav_id("   "));
         assert!(should_persist_nav_id("invalid-id"));
