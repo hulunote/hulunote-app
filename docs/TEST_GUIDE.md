@@ -67,7 +67,8 @@ export CHROMEDRIVER=/path/to/chromedriver
 ```
 
 - `webdriver.json` can be used to provide additional capabilities to the runner.
-  Keep this file local (do not commit it) because it is environment-specific.
+  - Commit it when the team wants a shared default browser capability setup.
+  - Keep machine-specific overrides out of git (or use ignored local variants) if your environment differs.
 
 ## 3) Linting
 

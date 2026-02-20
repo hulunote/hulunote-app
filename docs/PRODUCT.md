@@ -375,7 +375,8 @@ It is written as product behavior (not implementation detail) and is intended to
 ### 9.2 Editing model
 
 - Click a node to enter inline edit mode.
-- On blur, edits are saved locally first; backend sync is asynchronous.
+- Edits are persisted local-first during editing interactions (input/commands), and blur also performs a final save path.
+- Backend sync is asynchronous.
 - The product follows a local-first model (immediate UX, eventual backend convergence).
 
 ### 9.3 Keyboard behavior
