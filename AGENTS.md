@@ -13,8 +13,7 @@
 A task is done only when all applicable items are satisfied:
 
 1. Behavior is verified by tests (or a clear reason is given when tests are not feasible).
-2. Code changes are committed in a coherent, reviewable unit.
-3. Reusable lessons are captured here only when they are truly reusable.
+2. Reusable lessons are captured here only when they are truly reusable.
 
 ## Design / Architecture Policy
 
@@ -31,7 +30,6 @@ A task is done only when all applicable items are satisfied:
 
 ## Version Control Policy
 
-- Any code change must end with a commit.
 - One TODO item maps to at most one commit.
 - Do not discard user-authored doc changes (`AGENTS.md`, `docs/*`) as unrelated cleanup.
 
@@ -93,6 +91,31 @@ Avoid interactive git flows that can hang in non-TTY environments.
 
 - Keep this section for cross-task engineering pitfalls only.
 - User-visible behavior definitions (shortcuts/navigation semantics) belong in `docs/USER_MANUAL.md`.
+
+## Testing Policy
+
+- For wasm/editor behavior changes, run wasm tests explicitly.
+- Preferred command:
+  - `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner cargo test --target wasm32-unknown-unknown`
+- If wasm tests are not feasible in current environment, state the blocker and provide the exact command for local verification.
+
+## Test Placement Policy
+
+- Prefer module-local tests for module logic.
+- Use `tests/*.rs` only when validating cross-module integration or real DOM/browser integration behavior.
+
+## Debug Code Policy
+
+- Temporary debug logs/instrumentation must be removed within the same task.
+- Do not leave debug output in the final diff unless explicitly requested.
+
+## Ambiguity Handling Policy
+
+- Do not invent requirements.
+- When multiple implementations are plausible, present:
+  - one recommended option,
+  - one fallback option,
+  - and a short tradeoff rationale.
 
 ---
 
