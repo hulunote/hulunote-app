@@ -160,7 +160,7 @@ pub(crate) fn list_dirty_notes(limit: usize) -> Vec<(String, String)> {
         .collect();
 
     // Prefer recently-updated dirty notes to avoid starvation caused by lexicographic ordering.
-    notes_with_updated.sort_by(|a, b| b.2.cmp(&a.2));
+    notes_with_updated.sort_by_key(|x| std::cmp::Reverse(x.2));
 
     notes_with_updated
         .into_iter()
@@ -249,10 +249,7 @@ pub(crate) fn touch_nav(db_id: &str, note_id: &str, nav_id: &str, content: &str)
     let mut d = load_note_draft(db_id, note_id);
     let now = now_ms();
 
-    let b = d
-        .nav_state
-        .entry(nav_id.to_string())
-        .or_insert_with(NavDraftState::default);
+    let b = d.nav_state.entry(nav_id.to_string()).or_default();
     b.content = content.to_string();
     b.updated_ms = now;
     b.content_dirty = true;
@@ -280,10 +277,7 @@ pub(crate) fn touch_nav_meta(db_id: &str, note_id: &str, nav: &Nav) {
         properties: nav.properties.clone(),
     };
 
-    let b = d
-        .nav_state
-        .entry(nav.id.clone())
-        .or_insert_with(NavDraftState::default);
+    let b = d.nav_state.entry(nav.id.clone()).or_default();
     b.meta = Some(meta);
     b.updated_ms = now;
 
@@ -337,10 +331,7 @@ pub(crate) fn mark_nav_synced(db_id: &str, note_id: &str, nav_id: &str, synced_m
     }
 
     let mut d = load_note_draft(db_id, note_id);
-    let b = d
-        .nav_state
-        .entry(nav_id.to_string())
-        .or_insert_with(NavDraftState::default);
+    let b = d.nav_state.entry(nav_id.to_string()).or_default();
     b.synced_ms = b.synced_ms.max(synced_ms);
     b.content_dirty = false;
     b.retry_count = 0;
@@ -358,10 +349,7 @@ pub(crate) fn mark_nav_meta_synced(db_id: &str, note_id: &str, nav_id: &str, syn
     }
 
     let mut d = load_note_draft(db_id, note_id);
-    let b = d
-        .nav_state
-        .entry(nav_id.to_string())
-        .or_insert_with(NavDraftState::default);
+    let b = d.nav_state.entry(nav_id.to_string()).or_default();
 
     // Meta sync is tracked independently from content sync:
     // clearing `meta` marks metadata as converged while keeping content channel untouched.
@@ -391,10 +379,7 @@ pub(crate) fn mark_nav_sync_failed(db_id: &str, note_id: &str, nav_id: &str) {
     index_touch_note(db_id, note_id);
 
     let mut d = load_note_draft(db_id, note_id);
-    let b = d
-        .nav_state
-        .entry(nav_id.to_string())
-        .or_insert_with(NavDraftState::default);
+    let b = d.nav_state.entry(nav_id.to_string()).or_default();
 
     b.retry_count = b.retry_count.saturating_add(1);
     let delay = compute_retry_delay_ms(b.retry_count);
@@ -730,10 +715,16 @@ mod wasm_tests {
         assert_eq!(resolve_local_note_title(db_id, note_id, "server"), "server");
 
         touch_nav(db_id, note_id, nav_id, "c1");
-        assert_eq!(resolve_local_nav_content(db_id, note_id, nav_id, "sv"), "c1");
+        assert_eq!(
+            resolve_local_nav_content(db_id, note_id, nav_id, "sv"),
+            "c1"
+        );
 
         mark_nav_synced(db_id, note_id, nav_id, i64::MAX);
-        assert_eq!(resolve_local_nav_content(db_id, note_id, nav_id, "sv"), "sv");
+        assert_eq!(
+            resolve_local_nav_content(db_id, note_id, nav_id, "sv"),
+            "sv"
+        );
 
         touch_nav(db_id, note_id, nav_id2, "c2");
         assert_eq!(

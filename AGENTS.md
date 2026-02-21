@@ -99,6 +99,10 @@ Avoid interactive git flows that can hang in non-TTY environments.
   - `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner cargo test --target wasm32-unknown-unknown`
 - If wasm tests are not feasible in current environment, state the blocker and provide the exact command for local verification.
 
+## Formatting Policy
+
+- After code changes, run the project-standard formatter(s) before committing.
+
 ## Test Placement Policy
 
 - Prefer module-local tests for module logic.

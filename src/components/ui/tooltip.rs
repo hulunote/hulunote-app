@@ -66,5 +66,5 @@ pub fn TooltipContent(
 /// Kept for backwards compatibility but renders nothing.
 #[component]
 pub fn TooltipProvider() -> impl IntoView {
-    ()
+    ""
 }

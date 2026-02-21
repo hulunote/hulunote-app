@@ -82,11 +82,7 @@ impl NoteSyncController {
         }
 
         let next = self.offline_next_probe_ms.get_untracked();
-        if next == 0 || now_ms >= next {
-            true
-        } else {
-            false
-        }
+        next == 0 || now_ms >= next
     }
 
     fn schedule_next_offline_probe(&self, now_ms: i64) {
@@ -299,7 +295,7 @@ impl NoteSyncController {
             let api_client = self.app_state.0.api_client.get_untracked();
             let db_id_clone = db_id.clone();
             let note_id_clone = note_id_for_title.to_string();
-            let app_state_notes = self.app_state.0.notes.clone();
+            let app_state_notes = self.app_state.0.notes;
             spawn_local(async move {
                 match api_client
                     .update_note_title(&note_id_clone, &title.value)
@@ -431,7 +427,7 @@ impl NoteSyncController {
 
         if let Ok(mut map) = self.autosave_timers.lock() {
             if let Some(tid) = map.remove(&nav_id) {
-                let _ = win.clear_timeout_with_handle(tid);
+                win.clear_timeout_with_handle(tid);
             }
         }
 
@@ -693,7 +689,7 @@ impl NoteSyncController {
 
         // Flush nav content drafts.
         let mut drafts = get_unsynced_nav_drafts(&db_id, &note_id);
-        drafts.sort_by(|a, b| b.2.cmp(&a.2));
+        drafts.sort_by_key(|x| std::cmp::Reverse(x.2));
 
         let k_recent: usize = 5;
         let mut picked: Vec<(String, String, i64)> = Vec::new();

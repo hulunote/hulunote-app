@@ -305,7 +305,10 @@ fn should_persist_nav_id(nav_id: &str) -> bool {
     !id.is_empty()
 }
 
-fn ensure_trailing_caret_anchor(doc: &web_sys::Document, root: &web_sys::Node) -> Option<web_sys::Node> {
+fn ensure_trailing_caret_anchor(
+    doc: &web_sys::Document,
+    root: &web_sys::Node,
+) -> Option<web_sys::Node> {
     // Remove all existing trailing markers inside this root.
     if let Ok(list) = doc.query_selector_all("[data-caret-anchor='1']") {
         for i in 0..list.length() {
@@ -647,7 +650,7 @@ fn ce_set_caret_utf16(el: &web_sys::HtmlElement, pos_utf16: u32) {
                 return;
             }
 
-            if el.tag_name().to_ascii_lowercase() == "br" {
+            if el.tag_name().eq_ignore_ascii_case("br") {
                 if *remaining <= 1 {
                     if let Some(next) = node.next_sibling() {
                         if is_caret_anchor(&next) {
@@ -695,7 +698,7 @@ fn ce_set_caret_utf16(el: &web_sys::HtmlElement, pos_utf16: u32) {
         } else {
             let _ = range.set_start(&node, off);
         }
-        let _ = range.collapse_with_to_start(true);
+        range.collapse_with_to_start(true);
 
         if let Ok(Some(sel)) = doc.get_selection() {
             let _ = sel.remove_all_ranges();
@@ -707,7 +710,7 @@ fn ce_set_caret_utf16(el: &web_sys::HtmlElement, pos_utf16: u32) {
 
     // Fallback for empty/anchor-only DOM shapes.
     let _ = range.set_start(&root_node, 0);
-    let _ = range.collapse_with_to_start(true);
+    range.collapse_with_to_start(true);
     if let Ok(Some(sel)) = doc.get_selection() {
         let _ = sel.remove_all_ranges();
         let _ = sel.add_range(&range);
@@ -1826,7 +1829,7 @@ pub fn OutlineNode(
         }
 
         let col = target_cursor_col.get_untracked();
-        let editing_ref2 = editing_ref.clone();
+        let editing_ref2 = editing_ref;
 
         // Defer to the next animation frame so the contenteditable element is mounted and the
         // NodeRef is populated, without accumulating unbounded setTimeout callbacks.
@@ -1909,16 +1912,16 @@ pub fn OutlineNode(
                     let list_he: web_sys::HtmlElement = list_elem.unchecked_into();
                     let row_he: web_sys::HtmlElement = row.unchecked_into();
 
-                    let row_top = row_he.offset_top() as i32;
-                    let row_bottom = row_top + row_he.offset_height() as i32;
+                    let row_top = row_he.offset_top();
+                    let row_bottom = row_top + row_he.offset_height();
 
                     let view_top = list_he.scroll_top();
-                    let view_bottom = view_top + list_he.client_height() as i32;
+                    let view_bottom = view_top + list_he.client_height();
 
                     if row_top < view_top {
                         list_he.set_scroll_top(row_top);
                     } else if row_bottom > view_bottom {
-                        list_he.set_scroll_top(row_bottom - list_he.client_height() as i32);
+                        list_he.set_scroll_top(row_bottom - list_he.client_height());
                     }
                 })
                 .as_ref()
@@ -2013,7 +2016,7 @@ pub fn OutlineNode(
                         .into_any()
                 };
 
-                let on_toggle_cb = on_toggle.clone();
+                let on_toggle_cb = on_toggle;
 
                 // VSCode-style folding connector for expanded blocks.
                 // Align to the current nav's indentation guide column (same level as its bullet).
@@ -2420,7 +2423,7 @@ pub fn OutlineNode(
                                                     let editing_value = editing_value;
                                                     let editing_snapshot = editing_snapshot;
                                                     let target_cursor_col = target_cursor_col;
-                                                    let editing_ref2 = editing_ref.clone();
+                                                    let editing_ref2 = editing_ref;
 
                                                     let db_id = app_state.0.current_database_id.get_untracked().unwrap_or_default();
                                                     let note_id = note_id_sv.get_value();
@@ -2434,7 +2437,7 @@ pub fn OutlineNode(
                                                         // Let the follow-up point-based placement decide caret position.
                                                         target_cursor_col.set(None);
 
-                                                        let editing_ref3 = editing_ref2.clone();
+                                                        let editing_ref3 = editing_ref2;
                                                         let click_x2 = click_x;
                                                         let click_y2 = click_y;
                                                         let target_cursor_col2 = target_cursor_col;
@@ -2532,29 +2535,23 @@ pub fn OutlineNode(
                                                                     let preview_hide_timer: RwSignal<Option<i32>> = RwSignal::new(None);
 
                                                                     let clear_preview_show_timer = {
-                                                                        let preview_show_timer = preview_show_timer;
                                                                         move || {
                                                                             if let Some(id) = preview_show_timer.get_untracked() {
-                                                                                let _ = window().clear_timeout_with_handle(id);
+                                                                                window().clear_timeout_with_handle(id);
                                                                             }
                                                                             preview_show_timer.set(None);
                                                                         }
                                                                     };
                                                                     let clear_preview_hide_timer = {
-                                                                        let preview_hide_timer = preview_hide_timer;
                                                                         move || {
                                                                             if let Some(id) = preview_hide_timer.get_untracked() {
-                                                                                let _ = window().clear_timeout_with_handle(id);
+                                                                                window().clear_timeout_with_handle(id);
                                                                             }
                                                                             preview_hide_timer.set(None);
                                                                         }
                                                                     };
 
                                                                     let schedule_preview_show = {
-                                                                        let preview_popover_ref = preview_popover_ref;
-                                                                        let preview_show_timer = preview_show_timer;
-                                                                        let preview_trigger_hovered = preview_trigger_hovered;
-                                                                        let preview_popover_hovered = preview_popover_hovered;
                                                                         move || {
                                                                             clear_preview_hide_timer();
                                                                             clear_preview_show_timer();
@@ -2581,10 +2578,6 @@ pub fn OutlineNode(
                                                                     };
 
                                                                     let schedule_preview_hide = {
-                                                                        let preview_popover_ref = preview_popover_ref;
-                                                                        let preview_hide_timer = preview_hide_timer;
-                                                                        let preview_trigger_hovered = preview_trigger_hovered;
-                                                                        let preview_popover_hovered = preview_popover_hovered;
                                                                         move || {
                                                                             clear_preview_show_timer();
                                                                             clear_preview_hide_timer();
@@ -3534,7 +3527,7 @@ pub fn OutlineNode(
                                                     if should_jump {
                                                         let (cursor_pos, _cursor_end, _len) = input()
                                                             .as_ref()
-                                                            .map(|i| ce_selection_utf16(i))
+                                                            .map(ce_selection_utf16)
                                                             .unwrap_or((0, 0, 0));
                                                         let current_text = ce_text(&input_el);
                                                         let (_line_idx, cursor_col) = utf16_line_col_at_pos(&current_text, cursor_pos);

@@ -40,6 +40,9 @@ jobs:
       - name: Build with Trunk
         run: trunk build --locked
 
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
       - name: Run tests (host)
         run: cargo test --locked
 

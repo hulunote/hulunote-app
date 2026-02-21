@@ -1,6 +1,8 @@
 #![cfg(target_arch = "wasm32")]
 
-use hulunote_app::{test_caret_utf16, test_mount_outline_editor, test_set_caret_utf16, test_view_text};
+use hulunote_app::{
+    test_caret_utf16, test_mount_outline_editor, test_set_caret_utf16, test_view_text,
+};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::wasm_bindgen_test;
 use wasm_bindgen_test::wasm_bindgen_test_configure;

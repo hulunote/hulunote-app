@@ -722,7 +722,8 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
             .into_iter()
             .filter(|note| note.database_id == db_id_for_create)
             .collect();
-        let title_for_create = crate::util::next_available_untitled_note_title(&local_notes_for_create);
+        let title_for_create =
+            crate::util::next_available_untitled_note_title(&local_notes_for_create);
 
         spawn_local(async move {
             let note_id_for_create = crate::util::new_client_uuid();
@@ -739,8 +740,9 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
             {
                 Ok(note) => {
                     if note.id.trim().is_empty() {
-                        sidebar_create_note_error
-                            .set(Some("Create note failed: empty note id in response".to_string()));
+                        sidebar_create_note_error.set(Some(
+                            "Create note failed: empty note id in response".to_string(),
+                        ));
                         sidebar_create_note_loading.set(false);
                         return;
                     }
@@ -909,7 +911,7 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
 
         // Clear any scheduled retry; a manual/triggered call should run immediately.
         if let Some(id) = db_retry_timer_id.get_untracked() {
-            let _ = window().clear_timeout_with_handle(id);
+            window().clear_timeout_with_handle(id);
             db_retry_timer_id.set(None);
         }
 
@@ -1486,9 +1488,7 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
                                                                         .as_deref()
                                                                         == Some(id.as_str());
 
-                                                                    if is_pending_delete {
-                                                                        "group flex items-center gap-1 rounded-md bg-accent/80 px-1 transition-colors".to_string()
-                                                                    } else if is_selected {
+                                                                    if is_pending_delete || is_selected {
                                                                         "group flex items-center gap-1 rounded-md bg-accent/80 px-1 transition-colors".to_string()
                                                                     } else if delete_modal_open {
                                                                         "group flex items-center gap-1 rounded-md px-1 transition-colors".to_string()
@@ -2227,7 +2227,7 @@ pub fn NotePage() -> impl IntoView {
                 // Clear any pending debounce.
                 if let Some(win) = web_sys::window() {
                     if let Some(tid) = title_debounce_timer_id.get_untracked() {
-                        let _ = win.clear_timeout_with_handle(tid);
+                        win.clear_timeout_with_handle(tid);
                     }
                 }
                 title_debounce_timer_id.set(None);
@@ -2300,7 +2300,7 @@ pub fn NotePage() -> impl IntoView {
             wasm_bindgen::closure::Closure::once_into_js(move || {
                 if let Some(input) = title_input_ref.get_untracked() {
                     let _ = input.focus();
-                    let _ = input.select();
+                    input.select();
                 }
             })
             .as_ref()
@@ -2354,13 +2354,7 @@ pub fn NotePage() -> impl IntoView {
                 }
             });
             if let Some(snap) = load_note_snapshot(&db, &id) {
-                save_note_snapshot(
-                    &db,
-                    &id,
-                    Some(new_title),
-                    snap.navs,
-                    crate::util::now_ms(),
-                );
+                save_note_snapshot(&db, &id, Some(new_title), snap.navs, crate::util::now_ms());
             }
             return;
         }

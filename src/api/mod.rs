@@ -722,9 +722,6 @@ mod wasm_tests {
     fn validate_note_title_rejects_empty_and_too_long() {
         assert!(validate_note_title("   ").is_err());
         assert!(validate_note_title(&"x".repeat(NOTE_TITLE_MAX_CHARS + 1)).is_err());
-        assert_eq!(
-            validate_note_title("  ok  ").as_deref(),
-            Ok("ok")
-        );
+        assert_eq!(validate_note_title("  ok  ").as_deref(), Ok("ok"));
     }
 }

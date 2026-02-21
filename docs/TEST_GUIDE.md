@@ -85,15 +85,4 @@ Recommended checks:
 - Compare MCP-observed behavior with test assertions to locate flaky waits/selectors.
 
 This is a verification path for test reliability, not a replacement for automated E2E coverage.
-
-## Linting
-
-```bash
-cargo clippy --all-targets --all-features -- -D warnings
-```
-
-## Formatting
-
-```bash
-cargo fmt --all
 ```
