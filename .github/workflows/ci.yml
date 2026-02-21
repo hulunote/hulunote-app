@@ -29,7 +29,7 @@ jobs:
         with:
           tool: trunk
 
-      - name: Setup Node.js (for Tailwind CSS)
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -43,16 +43,19 @@ jobs:
       - name: Run tests (host)
         run: cargo test --locked
 
-      # WASM tests are a separate suite from host tests. Run them in CI to avoid missing regressions.
-      - name: Install wasm-bindgen-cli (includes wasm-bindgen-test-runner)
+      - name: Install wasm-bindgen-cli
         run: cargo install wasm-bindgen-cli
 
-      - name: Install Chrome (for wasm-bindgen-test-runner)
-        uses: browser-actions/setup-chrome@v1
+      - name: Install Chrome
+        id: setup-chrome
+        uses: browser-actions/setup-chrome@v2
+        with:
+          install-chromedriver: true
 
-      - name: Run tests (wasm32 / browser)
+      - name: Run tests
         env:
           CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+          CHROMEDRIVER: ${{ steps.setup-chrome.outputs.chromedriver-path }}
           WASM_BINDGEN_TEST_TIMEOUT: '120'
         run: cargo test --locked --target wasm32-unknown-unknown
 
