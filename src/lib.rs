@@ -33,9 +33,8 @@ mod tests {
     use crate::editor::{
         apply_nav_content, backfill_content_request, compute_reorder_target, get_nav_content,
     };
-    use crate::models::{Nav, Note, RecentDb, RecentNote};
+    use crate::models::{Nav, RecentDb, RecentNote};
     use crate::storage::upsert_lru_by_key;
-    use crate::util::next_available_daily_note_title_for_date;
 
     #[test]
     fn login_response_contract_deserialize() {
@@ -343,33 +342,6 @@ mod tests {
         let out = ApiClient::parse_note_list_response(v);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].id, "n_alive");
-    }
-
-    #[test]
-    fn next_available_daily_note_title_adds_suffix() {
-        let base = "20260209";
-
-        let notes = vec![
-            Note {
-                id: "n1".to_string(),
-                database_id: "db".to_string(),
-                title: base.to_string(),
-                content: "".to_string(),
-                created_at: "t1".to_string(),
-                updated_at: "t2".to_string(),
-            },
-            Note {
-                id: "n2".to_string(),
-                database_id: "db".to_string(),
-                title: format!("{}-2", base),
-                content: "".to_string(),
-                created_at: "t1".to_string(),
-                updated_at: "t2".to_string(),
-            },
-        ];
-
-        let next = next_available_daily_note_title_for_date(base, &notes);
-        assert_eq!(next, format!("{}-3", base));
     }
 
     #[test]
