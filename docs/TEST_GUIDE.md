@@ -70,6 +70,10 @@ Example command:
 npm run test:e2e
 ```
 
+Detailed E2E principles:
+
+- `docs/E2E_GUIDE.md`
+
 ## Playwright MCP Manual Verification
 
 When an E2E case fails but behavior appears correct in a real browser, verify with Playwright MCP before changing production code.
