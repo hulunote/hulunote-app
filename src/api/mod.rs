@@ -2,6 +2,24 @@ use crate::models::{AccountInfo, Database, Nav, Note};
 use crate::storage::{TOKEN_KEY, USER_KEY};
 use serde::{Deserialize, Serialize};
 
+const NOTE_TITLE_MAX_CHARS: usize = 255;
+
+fn validate_note_title(title: &str) -> Result<String, String> {
+    let normalized = title.trim().to_string();
+    if normalized.is_empty() {
+        return Err("title cannot be empty".to_string());
+    }
+
+    if normalized.chars().count() > NOTE_TITLE_MAX_CHARS {
+        return Err(format!(
+            "title is too long (max {} characters)",
+            NOTE_TITLE_MAX_CHARS
+        ));
+    }
+
+    Ok(normalized)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ApiErrorKind {
     Unauthorized,
@@ -478,13 +496,15 @@ impl ApiClient {
         note_id: Option<&str>,
         root_nav_id: Option<&str>,
     ) -> Result<Note, String> {
+        let title = validate_note_title(title)?;
+
         let data: serde_json::Value = self
             .request(
                 "POST",
                 "/hulunote/new-note",
                 Some(&CreateNoteRequest {
                     database_id: database_id.to_string(),
-                    title: title.to_string(),
+                    title: title.clone(),
                     note_id: note_id.map(|s| s.to_string()),
                     root_nav_id: root_nav_id.map(|s| s.to_string()),
                 }),
@@ -516,7 +536,7 @@ impl ApiClient {
         Ok(Note {
             id,
             database_id: database_id.to_string(),
-            title: title.to_string(),
+            title,
             content: String::new(),
             created_at: String::new(),
             updated_at: String::new(),
@@ -524,6 +544,7 @@ impl ApiClient {
     }
 
     pub async fn update_note_title(&self, note_id: &str, title: &str) -> Result<(), String> {
+        let title = validate_note_title(title)?;
         self.request_api::<serde_json::Value>(
             "/hulunote/update-hulunote-note",
             Some(&serde_json::json!({ "note-id": note_id, "title": title })),
@@ -695,5 +716,15 @@ mod wasm_tests {
         ApiClient::clear_storage();
         let c3 = ApiClient::load_from_storage();
         assert!(c3.get_auth_token().is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn validate_note_title_rejects_empty_and_too_long() {
+        assert!(validate_note_title("   ").is_err());
+        assert!(validate_note_title(&"x".repeat(NOTE_TITLE_MAX_CHARS + 1)).is_err());
+        assert_eq!(
+            validate_note_title("  ok  ").as_deref(),
+            Ok("ok")
+        );
     }
 }

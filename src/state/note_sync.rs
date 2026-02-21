@@ -210,7 +210,9 @@ impl NoteSyncController {
         );
 
         // Persist drafts so sync worker can create it on backend when online.
-        crate::drafts::touch_nav(db_id, note_id, &nav_id, initial_content);
+        if !initial_content.is_empty() {
+            crate::drafts::touch_nav(db_id, note_id, &nav_id, initial_content);
+        }
         crate::drafts::touch_nav_meta(db_id, note_id, &nav);
 
         Some(nav_id)
@@ -346,6 +348,9 @@ impl NoteSyncController {
         let api_client = self.app_state.0.api_client.get_untracked();
         let s2 = self.clone();
         spawn_local(async move {
+            if should_defer_content_sync(&db_id, &note_id, &nav_id) {
+                return;
+            }
             let req = CreateOrUpdateNavRequest {
                 note_id: note_id.clone(),
                 id: Some(nav_id.clone()),
@@ -545,6 +550,9 @@ impl NoteSyncController {
                 if nav_id.trim().is_empty() {
                     continue;
                 }
+                if should_defer_content_sync(&db_id, &note_id, &nav_id) {
+                    continue;
+                }
 
                 let req = CreateOrUpdateNavRequest {
                     note_id: note_id.clone(),
@@ -716,6 +724,9 @@ impl NoteSyncController {
                 if nav_id.trim().is_empty() {
                     continue;
                 }
+                if should_defer_content_sync(&db_id, &note_id, &nav_id) {
+                    continue;
+                }
 
                 let req = CreateOrUpdateNavRequest {
                     note_id: note_id.clone(),
@@ -769,4 +780,16 @@ impl NoteSyncController {
             }
         });
     }
+}
+
+fn should_defer_content_sync(db_id: &str, note_id: &str, nav_id: &str) -> bool {
+    if db_id.trim().is_empty() || note_id.trim().is_empty() || nav_id.trim().is_empty() {
+        return false;
+    }
+
+    crate::drafts::load_note_draft(db_id, note_id)
+        .nav_state
+        .get(nav_id)
+        .and_then(|state| state.meta.as_ref())
+        .is_some()
 }

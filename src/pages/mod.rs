@@ -1,18 +1,17 @@
-use crate::linking::extract_bidirectional_links;
-use crate::drafts::load_note_snapshot;
 use crate::components::ui::{
     Alert, AlertDescription, Button, ButtonSize, ButtonVariant, Card, CardContent, CardDescription,
     CardHeader, CardTitle, Input, Label, Spinner,
 };
 use crate::drafts::resolve_local_note_title;
+use crate::drafts::{load_note_snapshot, save_note_snapshot};
 use crate::editor::OutlineEditor;
+use crate::linking::extract_bidirectional_links;
 use crate::models::Nav;
 use crate::state::{AppContext, DbUiActions};
 use crate::storage::{
     load_recent_notes, save_recent_notes, save_user_to_storage, write_recent_db, write_recent_note,
     CURRENT_DB_KEY, SIDEBAR_COLLAPSED_KEY,
 };
-use crate::util::next_available_daily_note_title;
 use crate::util::ROOT_CONTAINER_PARENT_ID;
 use leptos::ev;
 use leptos::html;
@@ -23,6 +22,9 @@ use leptos_router::components::A;
 use leptos_router::hooks::{use_location, use_navigate, use_query_map};
 use leptos_router::params::Params;
 use wasm_bindgen::JsCast;
+
+const LOCAL_PENDING_NOTE_CREATED_AT: &str = "local-pending";
+
 #[component]
 pub fn LoginPage() -> impl IntoView {
     let email: RwSignal<String> = RwSignal::new(String::new());
@@ -694,6 +696,109 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
         note_delete_open.set(true);
     };
 
+    let sidebar_create_note_loading: RwSignal<bool> = RwSignal::new(false);
+    let sidebar_create_note_error: RwSignal<Option<String>> = RwSignal::new(None);
+
+    let on_create_note_from_sidebar = move |_: web_sys::MouseEvent| {
+        if sidebar_create_note_loading.get_untracked() {
+            return;
+        }
+
+        let db_id = current_db_id.get_untracked().unwrap_or_default();
+        if db_id.trim().is_empty() {
+            sidebar_create_note_error.set(Some("No database selected".to_string()));
+            return;
+        }
+
+        sidebar_create_note_loading.set(true);
+        sidebar_create_note_error.set(None);
+
+        let api_client = app_state.0.api_client.get_untracked();
+        let db_id_for_create = db_id.clone();
+        let local_notes_for_create: Vec<crate::models::Note> = app_state
+            .0
+            .notes
+            .get_untracked()
+            .into_iter()
+            .filter(|note| note.database_id == db_id_for_create)
+            .collect();
+        let title_for_create = crate::util::next_available_untitled_note_title(&local_notes_for_create);
+
+        spawn_local(async move {
+            let note_id_for_create = crate::util::new_client_uuid();
+            let root_nav_id_for_create = crate::util::new_client_uuid();
+
+            match api_client
+                .create_note(
+                    &db_id_for_create,
+                    &title_for_create,
+                    Some(&note_id_for_create),
+                    Some(&root_nav_id_for_create),
+                )
+                .await
+            {
+                Ok(note) => {
+                    if note.id.trim().is_empty() {
+                        sidebar_create_note_error
+                            .set(Some("Create note failed: empty note id in response".to_string()));
+                        sidebar_create_note_loading.set(false);
+                        return;
+                    }
+
+                    app_state.0.notes.update(|xs| {
+                        if let Some(existing) = xs.iter_mut().find(|n| n.id == note.id) {
+                            *existing = note.clone();
+                        } else {
+                            xs.insert(0, note.clone());
+                        }
+                    });
+                    app_state
+                        .0
+                        .notes_last_loaded_db_id
+                        .set(Some(db_id_for_create.clone()));
+
+                    let root_container = crate::models::Nav {
+                        id: root_nav_id_for_create,
+                        note_id: note.id.clone(),
+                        parid: ROOT_CONTAINER_PARENT_ID.to_string(),
+                        same_deep_order: 0.0,
+                        content: String::new(),
+                        is_display: true,
+                        is_delete: false,
+                        properties: None,
+                    };
+                    save_note_snapshot(
+                        &db_id_for_create,
+                        &note.id,
+                        Some(title_for_create),
+                        vec![root_container],
+                        crate::util::now_ms(),
+                    );
+
+                    navigate.with_value(|nav| {
+                        nav(
+                            &format!("/db/{}/note/{}", db_id_for_create, note.id),
+                            Default::default(),
+                        );
+                    });
+                }
+                Err(e) => {
+                    if e == "Unauthorized" {
+                        let mut c = app_state.0.api_client.get_untracked();
+                        c.logout();
+                        app_state.0.api_client.set(c);
+                        app_state.0.current_user.set(None);
+                        let _ = window().location().set_href("/login");
+                    } else {
+                        sidebar_create_note_error.set(Some(e));
+                    }
+                }
+            }
+
+            sidebar_create_note_loading.set(false);
+        });
+    };
+
     let on_submit_delete_note = move |_: web_sys::MouseEvent| {
         if note_delete_loading.get_untracked() {
             return;
@@ -1303,9 +1408,31 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
                             </Show>
 
                             <Show when=move || sidebar_show_pages() fallback=|| ().into_view()>
+                                <div class="space-y-2">
+                                    <Button
+                                        variant=ButtonVariant::Outline
+                                        size=ButtonSize::Sm
+                                        class="h-10 w-full justify-center text-sm font-medium"
+                                        attr:disabled=move || sidebar_create_note_loading.get()
+                                        on:click=on_create_note_from_sidebar
+                                        attr:title="New note"
+                                    >
+                                        {move || if sidebar_create_note_loading.get() { "Creating..." } else { "New Note" }}
+                                    </Button>
+                                    <Show
+                                        when=move || sidebar_create_note_error.get().is_some()
+                                        fallback=|| ().into_view()
+                                    >
+                                        {move || {
+                                            sidebar_create_note_error.get().map(|e| {
+                                                view! { <p class="text-xs text-destructive">{e}</p> }
+                                            })
+                                        }}
+                                    </Show>
+                                </div>
+
                                 <Card>
                                     <CardContent class="p-3">
-                                        <span class="sr-only">"Pages"</span>
                                         <div class="space-y-1">
                                             {move || {
                                                 let db_id = current_db_id.get().unwrap_or_default();
@@ -1874,6 +2001,8 @@ pub fn NotePage() -> impl IntoView {
     let title_original: RwSignal<String> = RwSignal::new(String::new());
     // Track which note the title_value currently belongs to.
     let title_note_id: RwSignal<String> = RwSignal::new(String::new());
+    let title_input_ref: NodeRef<html::Input> = NodeRef::new();
+    let focused_new_note_title_note_id: RwSignal<Option<String>> = RwSignal::new(None);
 
     // Optional: focus a specific nav by id (from backlinks click).
     let query = use_query_map();
@@ -2114,7 +2243,7 @@ pub fn NotePage() -> impl IntoView {
                 title_note_id.set(id.clone());
                 title_value.set(n.title.clone());
                 title_original.set(n.title.clone());
-            } else if title_value.get().trim().is_empty() {
+            } else if title_value.get() != n.title {
                 title_value.set(n.title.clone());
                 title_original.set(n.title.clone());
             }
@@ -2142,27 +2271,102 @@ pub fn NotePage() -> impl IntoView {
         }
     });
 
+    // For newly created local notes, place caret in title field immediately.
+    Effect::new(move |_| {
+        let id = note_id();
+        if id.trim().is_empty() {
+            return;
+        }
+        if title_note_id.get() != id {
+            return;
+        }
+        let is_local_pending = app_state
+            .0
+            .notes
+            .get()
+            .into_iter()
+            .find(|n| n.id == id)
+            .map(|n| n.created_at == LOCAL_PENDING_NOTE_CREATED_AT)
+            .unwrap_or(false);
+        if !is_local_pending {
+            return;
+        }
+        if focused_new_note_title_note_id.get().as_deref() == Some(id.as_str()) {
+            return;
+        }
+        focused_new_note_title_note_id.set(Some(id.clone()));
+
+        let _ = window().request_animation_frame(
+            wasm_bindgen::closure::Closure::once_into_js(move || {
+                if let Some(input) = title_input_ref.get_untracked() {
+                    let _ = input.focus();
+                    let _ = input.select();
+                }
+            })
+            .as_ref()
+            .unchecked_ref(),
+        );
+    });
+
     let save_title = move || {
         if saving.get_untracked() {
             return;
         }
         let id = note_id_untracked();
         let new_title = title_value.get_untracked();
+        let original_title = title_original.get_untracked();
+        let db = db_id_untracked();
         if id.trim().is_empty() {
             return;
         }
-        if new_title.trim().is_empty() {
-            error.set(Some("Title cannot be empty".to_string()));
-            return;
-        }
-
-        // Clear validation error once title becomes non-empty.
         if error.get_untracked().is_some() {
             error.set(None);
         }
 
+        if new_title.trim().is_empty() {
+            title_value.set(original_title);
+            return;
+        }
+
+        let is_local_pending = app_state
+            .0
+            .notes
+            .get_untracked()
+            .into_iter()
+            .find(|n| n.id == id)
+            .map(|n| n.created_at == LOCAL_PENDING_NOTE_CREATED_AT)
+            .unwrap_or(false);
+
+        if is_local_pending && new_title.trim().is_empty() {
+            return;
+        }
+
+        if is_local_pending {
+            if db.trim().is_empty() {
+                return;
+            }
+
+            // Keep local cache in sync immediately.
+            title_original.set(new_title.clone());
+            app_state.0.notes.update(|xs| {
+                if let Some(n) = xs.iter_mut().find(|n| n.id == id) {
+                    n.title = new_title.clone();
+                }
+            });
+            if let Some(snap) = load_note_snapshot(&db, &id) {
+                save_note_snapshot(
+                    &db,
+                    &id,
+                    Some(new_title),
+                    snap.navs,
+                    crate::util::now_ms(),
+                );
+            }
+            return;
+        }
+
         // Avoid redundant saves when the user didn't change anything.
-        if new_title == title_original.get_untracked() {
+        if new_title == original_title {
             return;
         }
 
@@ -2193,6 +2397,7 @@ pub fn NotePage() -> impl IntoView {
             <div class="space-y-2">
                 <div class="flex items-center gap-2">
                     <Input
+                        node_ref=title_input_ref
                         bind_value=title_value
                         class=title_input_class
                         placeholder="Untitled"
@@ -2209,9 +2414,16 @@ pub fn NotePage() -> impl IntoView {
                                 .map(|t| t.value())
                                 .unwrap_or_else(|| title_value.get_untracked());
 
-                            // Clear empty-title validation as soon as user types a non-empty title.
-                            if !v.trim().is_empty() && error.get_untracked().is_some() {
-                                error.set(None);
+                            let pending_local = app_state
+                                .0
+                                .notes
+                                .get_untracked()
+                                .into_iter()
+                                .find(|n| n.id == id)
+                                .map(|n| n.created_at == LOCAL_PENDING_NOTE_CREATED_AT)
+                                .unwrap_or(false);
+                            if pending_local {
+                                return;
                             }
 
                             // Write to draft immediately and schedule autosave (consistent with nav editing).
@@ -2465,9 +2677,6 @@ pub fn DbHomePage() -> impl IntoView {
 
     let rename_open: RwSignal<bool> = RwSignal::new(false);
 
-    // Phase 5: create note (non-paginated)
-    let create_note_loading: RwSignal<bool> = RwSignal::new(false);
-    let create_note_error: RwSignal<Option<String>> = RwSignal::new(None);
     let rename_value: RwSignal<String> = RwSignal::new(String::new());
     let rename_loading: RwSignal<bool> = RwSignal::new(false);
     let rename_error: RwSignal<Option<String>> = RwSignal::new(None);
@@ -2479,14 +2688,6 @@ pub fn DbHomePage() -> impl IntoView {
 
     // Params are reactive; read tracked in effects/views, and read untracked in event handlers.
     let db_id = move || params.get().ok().and_then(|p| p.db_id).unwrap_or_default();
-    let db_id_untracked = move || {
-        params
-            .get_untracked()
-            .ok()
-            .and_then(|p| p.db_id)
-            .unwrap_or_default()
-    };
-
     let persist_current_db = move |id: &str| {
         if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
             let _ = storage.set_item(CURRENT_DB_KEY, id);
@@ -2803,89 +3004,9 @@ pub fn DbHomePage() -> impl IntoView {
                 <CardContent>
                     <div class="flex items-center justify-between gap-3">
                         <div class="text-sm font-medium">"Notes"</div>
-                        <Button
-                            variant=ButtonVariant::Outline
-                            size=ButtonSize::Sm
-                            attr:disabled=move || create_note_loading.get()
-                            on:click=move |_| {
-                                if create_note_loading.get_untracked() {
-                                    return;
-                                }
-
-                                create_note_loading.set(true);
-                                create_note_error.set(None);
-
-                                let id = db_id_untracked();
-                                let title = next_available_daily_note_title(&app_state.0.notes.get_untracked());
-                                let api_client = app_state.0.api_client.get_untracked();
-                                let load_notes_for_sv = load_notes_for_sv;
-
-                                spawn_local(async move {
-                                    let note_id = crate::util::new_client_uuid();
-                                    let root_nav_id = crate::util::new_client_uuid();
-                                    match api_client
-                                        .create_note(&id, &title, Some(&note_id), Some(&root_nav_id))
-                                        .await
-                                    {
-                                        Ok(note) => {
-                                            // Refresh list then navigate to note.
-                                            load_notes_for_sv.with_value(|f| {
-                                                f(id.clone(), true);
-                                            });
-
-                                            if note.id.trim().is_empty() {
-                                                leptos::logging::error!(
-                                                    "create_note succeeded but returned empty note id; refusing to navigate: title={}",
-                                                    title
-                                                );
-                                                create_note_error.set(Some(
-                                                    "Create note failed: empty note id in response".to_string(),
-                                                ));
-                                                create_note_loading.set(false);
-                                                return;
-                                            }
-
-                                            navigate.with_value(|nav| {
-                                                nav(
-                                                    &format!("/db/{}/note/{}", id, note.id),
-                                                    Default::default(),
-                                                );
-                                            });
-                                        }
-                                        Err(e) => {
-                                            if e == "Unauthorized" {
-                                                let mut c = app_state.0.api_client.get_untracked();
-                                                c.logout();
-                                                app_state.0.api_client.set(c);
-                                                app_state.0.current_user.set(None);
-                                                let _ = window().location().set_href("/login");
-                                            } else {
-                                                create_note_error.set(Some(e));
-                                            }
-                                        }
-                                    }
-                                    create_note_loading.set(false);
-                                });
-                            }
-                            attr:title="New note"
-                        >
-                            {move || if create_note_loading.get() { "Creating..." } else { "New" }}
-                        </Button>
                     </div>
 
                     <div class="mt-3 space-y-2">
-                        <Show when=move || create_note_error.get().is_some() fallback=|| ().into_view()>
-                            {move || {
-                                create_note_error.get().map(|e| {
-                                    view! {
-                                        <Alert class="border-destructive/30">
-                                            <AlertDescription class="text-destructive text-xs">{e}</AlertDescription>
-                                        </Alert>
-                                    }
-                                })
-                            }}
-                        </Show>
-
                         <Show
                             when=move || !app_state.0.notes_loading.get()
                             fallback=move || view! {
