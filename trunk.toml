@@ -1,9 +1,11 @@
 [build]
 target_dir = "dist"
+public_url = "/"
 
 [serve]
+addresses = ["127.0.0.1"]
 port = 8803
-open = true
+open = false
 
 [watch]
 features = []

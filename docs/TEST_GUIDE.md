@@ -1,82 +1,94 @@
 # Test Guide
 
-This document describes how to run tests for `hulunote-app`.
+This document summarizes test architecture, validation method, and key commands for `hulunote-app`.
 
-## 1) Unit Tests (host)
+## Test Architecture
 
-Run the standard Rust unit tests (fast feedback; covers pure Rust logic):
+- **Host Rust tests**: fast feedback for pure logic and non-browser behavior.
+- **WASM/browser tests**: DOM/runtime behavior via `wasm-bindgen-test`.
+- **Playwright E2E scripts**: workflow-level browser checks in a real UI session.
+
+Host and wasm tests are separate suites and must be run independently.
+
+## Validation Method
+
+Use this order for reliable feedback:
 
 ```bash
+# Host tests
 cargo test
+
+# WASM/browser tests
+CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
+  cargo test --target wasm32-unknown-unknown
+
+# E2E (Playwright)
+npx playwright test
 ```
 
-## 2) WASM tests (wasm-bindgen-test)
-
-WASM tests are a **separate test suite** from host tests.
-
-- `cargo test --target wasm32-unknown-unknown` does **NOT** run host tests.
-- `cargo test` (host) does **NOT** run wasm32 tests.
-
-To avoid missing coverage, run **both** suites when validating changes.
-
-Some tests are WASM-only (e.g., localStorage round-trips, DOM/contenteditable/Selection behavior). These require:
-- `wasm32-unknown-unknown` target
-- `wasm-bindgen-test-runner`
-- A working WebDriver + browser
-
-### 2.1 Install prerequisites
+## WASM Test Prerequisites
 
 ```bash
 rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli --version 0.2.108
+cargo install wasm-bindgen-cli
 ```
 
-### 2.2 Run WASM tests
+`wasm32` browser tests run through `wasm-bindgen-test-runner`, and that runner requires a browser + WebDriver.
+
+### WebDriver notes
+
+Install browser drivers as needed:
 
 ```bash
-CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
-  cargo test --target wasm32-unknown-unknown
-```
-
-### 2.3 Recommended validation (avoid missing coverage)
-
-For changes that may affect user behavior (especially DOM/editor behavior), run:
-
-```bash
-# Host suite
-cargo test
-
-# Browser suite
-CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
-  cargo test --target wasm32-unknown-unknown
-```
-
-### 2.3 WebDriver notes
-
-- On macOS, the runner may default to Safari. You may need to enable Safari WebDriver:
-
-```bash
+# Safari (macOS)
 safaridriver --enable
+
+# ChromeDriver (macOS/Homebrew)
+brew install chromedriver
 ```
 
-- If you use Chrome, **ChromeDriver major version must match Chrome major version**.
-  - If you cannot upgrade Chrome, download a matching ChromeDriver and set:
+Use `webdriver.json` in repo root to provide local WebDriver capabilities overrides.
+
+## Playwright E2E Scripts
+
+Install dependencies:
 
 ```bash
-export CHROMEDRIVER=/path/to/chromedriver
+npm install
 ```
 
-- `webdriver.json` can be used to provide additional capabilities to the runner.
-  - Commit it when the team wants a shared default browser capability setup.
-  - Keep machine-specific overrides out of git (or use ignored local variants) if your environment differs.
+Required environment variables (when login session is not already cached):
 
-## 3) Linting
+```bash
+export HULUNOTE_E2E_EMAIL='your-email@example.com'
+export HULUNOTE_E2E_PASSWORD='your-password'
+```
+
+Example command:
+
+```bash
+npm run test:e2e
+```
+
+## Playwright MCP Manual Verification
+
+When an E2E case fails but behavior appears correct in a real browser, verify with Playwright MCP before changing production code.
+
+Recommended checks:
+
+- Open the app in MCP browser and reproduce the same workflow manually.
+- Inspect outline row count / depth changes after `Enter`, `Tab`, `Shift+Tab`, drag, and soft break.
+- Compare MCP-observed behavior with test assertions to locate flaky waits/selectors.
+
+This is a verification path for test reliability, not a replacement for automated E2E coverage.
+
+## Linting
 
 ```bash
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-## 4) Formatting
+## Formatting
 
 ```bash
 cargo fmt --all
