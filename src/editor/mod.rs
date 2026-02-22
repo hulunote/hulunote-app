@@ -12,7 +12,8 @@ use crate::models::{Nav, Note};
 use crate::state::AppContext;
 #[cfg(target_arch = "wasm32")]
 use crate::state::AppState;
-use crate::state::NoteSyncController;
+use crate::state::{FocusOwner, NoteSyncController};
+use crate::storage::{load_json_from_storage, save_json_to_storage};
 use crate::util::ROOT_CONTAINER_PARENT_ID;
 use leptos::ev;
 use leptos::html;
@@ -20,6 +21,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 #[cfg(target_arch = "wasm32")]
 use leptos_router::components::Router;
+use serde::{Deserialize, Serialize};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 
@@ -52,6 +54,36 @@ struct AutocompleteCtx {
     titles_cache_db: RwSignal<Option<String>>,
     titles_cache: RwSignal<Vec<String>>,
     titles_loading: RwSignal<bool>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct NoteCursorState {
+    nav_id: String,
+    cursor_col: u32,
+}
+
+fn note_cursor_key(db_id: &str, note_id: &str) -> String {
+    format!("hulunote_note_cursor::{db_id}::{note_id}")
+}
+
+fn save_note_cursor_state(db_id: &str, note_id: &str, nav_id: &str, cursor_col: u32) {
+    if db_id.trim().is_empty() || note_id.trim().is_empty() || nav_id.trim().is_empty() {
+        return;
+    }
+    save_json_to_storage(
+        &note_cursor_key(db_id, note_id),
+        &NoteCursorState {
+            nav_id: nav_id.to_string(),
+            cursor_col,
+        },
+    );
+}
+
+fn load_note_cursor_state(db_id: &str, note_id: &str) -> Option<NoteCursorState> {
+    if db_id.trim().is_empty() || note_id.trim().is_empty() {
+        return None;
+    }
+    load_json_from_storage::<NoteCursorState>(&note_cursor_key(db_id, note_id))
 }
 
 /// Update a nav's content in the local in-memory list.
@@ -1379,6 +1411,44 @@ fn reconcile_local_nav_content(db_id: &str, note_id: &str, navs: &mut [Nav]) {
     }
 }
 
+fn restore_editor_focus_for_note(
+    navs: &[Nav],
+    db_id: &str,
+    note_id: &str,
+    editing_id: RwSignal<Option<String>>,
+    editing_value: RwSignal<String>,
+    editing_snapshot: RwSignal<Option<(String, String)>>,
+    target_cursor_col: RwSignal<Option<u32>>,
+) {
+    if editing_id.get_untracked().is_some() {
+        return;
+    }
+
+    let visible_ids = collect_visible_preorder_ids(navs);
+    let Some(first_visible_id) = visible_ids.first().cloned() else {
+        return;
+    };
+
+    let picked = load_note_cursor_state(db_id, note_id)
+        .and_then(|saved| {
+            if visible_ids.iter().any(|id| id == &saved.nav_id) {
+                Some((saved.nav_id, saved.cursor_col))
+            } else {
+                None
+            }
+        })
+        .unwrap_or((first_visible_id, 0));
+
+    let Some(nav) = navs.iter().find(|n| n.id == picked.0) else {
+        return;
+    };
+
+    editing_id.set(Some(nav.id.clone()));
+    editing_value.set(nav.content.clone());
+    editing_snapshot.set(Some((nav.id.clone(), nav.content.clone())));
+    target_cursor_col.set(Some(picked.1));
+}
+
 #[component]
 pub fn OutlineEditor(
     note_id: impl Fn() -> String + Clone + Send + Sync + 'static,
@@ -1462,11 +1532,7 @@ pub fn OutlineEditor(
     let note_id_for_effect = note_id.clone();
     Effect::new(move |_| {
         let id = note_id_for_effect();
-        let db_id_now = app_state
-            .0
-            .current_database_id
-            .get_untracked()
-            .unwrap_or_default();
+        let db_id_now = app_state.0.current_database_id.get().unwrap_or_default();
 
         if id.trim().is_empty() {
             navs.set(vec![]);
@@ -1497,12 +1563,45 @@ pub fn OutlineEditor(
                         .as_deref()
                         .map(|pending_id| pending_id == id.as_str())
                         .unwrap_or(false);
-                    if !suppress_initial_nav_focus.get_untracked() && !suppress_by_new_note_intent {
+                    let suppress_by_title_focus_owner = matches!(
+                        app_state.0.focus_owner.get_untracked(),
+                        FocusOwner::Title { note_id } if note_id == id
+                    );
+                    if !suppress_initial_nav_focus.get_untracked()
+                        && !suppress_by_new_note_intent
+                        && !suppress_by_title_focus_owner
+                    {
                         editing_id.set(Some(tmp_id.clone()));
                         editing_value.set(String::new());
                         editing_snapshot.set(Some((tmp_id.clone(), String::new())));
                         target_cursor_col.set(Some(0));
                     }
+                }
+
+                let suppress_by_new_note_intent = app_state
+                    .0
+                    .pending_title_select_note_id
+                    .get_untracked()
+                    .as_deref()
+                    .map(|pending_id| pending_id == id.as_str())
+                    .unwrap_or(false);
+                let suppress_by_title_focus_owner = matches!(
+                    app_state.0.focus_owner.get_untracked(),
+                    FocusOwner::Title { note_id } if note_id == id
+                );
+                if !suppress_initial_nav_focus.get_untracked()
+                    && !suppress_by_new_note_intent
+                    && !suppress_by_title_focus_owner
+                {
+                    restore_editor_focus_for_note(
+                        &xs,
+                        &db_id_now,
+                        &id,
+                        editing_id,
+                        editing_value,
+                        editing_snapshot,
+                        target_cursor_col,
+                    );
                 }
 
                 reconcile_local_nav_content(&db_id_now, &id, &mut xs);
@@ -1557,8 +1656,13 @@ pub fn OutlineEditor(
                             .as_deref()
                             .map(|pending_id| pending_id == id.as_str())
                             .unwrap_or(false);
+                        let suppress_by_title_focus_owner = matches!(
+                            app_state.0.focus_owner.get_untracked(),
+                            FocusOwner::Title { note_id } if note_id == id
+                        );
                         if !suppress_initial_nav_focus.get_untracked()
                             && !suppress_by_new_note_intent
+                            && !suppress_by_title_focus_owner
                         {
                             editing_id.set(Some(tmp_id.clone()));
                             editing_value.set(String::new());
@@ -1568,6 +1672,32 @@ pub fn OutlineEditor(
                     } else {
                         // Persist snapshot for normal notes.
                         save_note_snapshot(&db_id2, &id, title, xs.clone(), crate::util::now_ms());
+                    }
+
+                    let suppress_by_new_note_intent = app_state
+                        .0
+                        .pending_title_select_note_id
+                        .get_untracked()
+                        .as_deref()
+                        .map(|pending_id| pending_id == id.as_str())
+                        .unwrap_or(false);
+                    let suppress_by_title_focus_owner = matches!(
+                        app_state.0.focus_owner.get_untracked(),
+                        FocusOwner::Title { note_id } if note_id == id
+                    );
+                    if !suppress_initial_nav_focus.get_untracked()
+                        && !suppress_by_new_note_intent
+                        && !suppress_by_title_focus_owner
+                    {
+                        restore_editor_focus_for_note(
+                            &xs,
+                            &db_id2,
+                            &id,
+                            editing_id,
+                            editing_value,
+                            editing_snapshot,
+                            target_cursor_col,
+                        );
                     }
 
                     reconcile_local_nav_content(&db_id2, &id, &mut xs);
@@ -1584,6 +1714,31 @@ pub fn OutlineEditor(
                             offline_missing_snapshot.set(false);
                             error.set(None);
                             let mut xs = snap.navs;
+                            let suppress_by_new_note_intent = app_state
+                                .0
+                                .pending_title_select_note_id
+                                .get_untracked()
+                                .as_deref()
+                                .map(|pending_id| pending_id == id.as_str())
+                                .unwrap_or(false);
+                            let suppress_by_title_focus_owner = matches!(
+                                app_state.0.focus_owner.get_untracked(),
+                                FocusOwner::Title { note_id } if note_id == id
+                            );
+                            if !suppress_initial_nav_focus.get_untracked()
+                                && !suppress_by_new_note_intent
+                                && !suppress_by_title_focus_owner
+                            {
+                                restore_editor_focus_for_note(
+                                    &xs,
+                                    &db_id2,
+                                    &id,
+                                    editing_id,
+                                    editing_value,
+                                    editing_snapshot,
+                                    target_cursor_col,
+                                );
+                            }
                             reconcile_local_nav_content(&db_id2, &id, &mut xs);
                             reconcile_local_nav_meta(&db_id2, &id, &mut xs);
                             navs.set(xs);
@@ -1773,6 +1928,7 @@ pub fn OutlineEditor(
                                         view! {
                                             <OutlineNode
                                                 nav_id=id
+                                                db_id=app_state.0.current_database_id.get().unwrap_or_default()
                                                 depth=0
                                                 navs=navs
                                                 note_id=nid
@@ -1802,6 +1958,7 @@ pub fn OutlineEditor(
 #[component]
 pub fn OutlineNode(
     nav_id: String,
+    db_id: String,
     depth: usize,
     navs: RwSignal<Vec<Nav>>,
     note_id: String,
@@ -1835,6 +1992,8 @@ pub fn OutlineNode(
     let nav_id_for_nav = nav_id.clone();
     let nav_id_for_toggle = nav_id.clone();
     let nav_id_for_render = nav_id.clone();
+    let note_id_for_focus_owner = note_id.clone();
+    let db_id_sv = StoredValue::new(db_id.clone());
 
     // (handler ids are captured per-render; avoid moving values out of the render closure)
 
@@ -1848,6 +2007,9 @@ pub fn OutlineNode(
         if !is_editing {
             return;
         }
+        app_state.0.focus_owner.set(FocusOwner::Outline {
+            note_id: note_id_for_focus_owner.clone(),
+        });
 
         let col = target_cursor_col.get_untracked();
         let editing_ref2 = editing_ref;
@@ -1976,7 +2138,9 @@ pub fn OutlineNode(
             .into_iter()
             .find(|n| n.id == nav_id_for_toggle)
         {
-            let _ = sync_sv.try_with_value(|s| s.on_nav_meta_changed(&n));
+            let _ = sync_sv.try_with_value(|s| {
+                s.on_nav_meta_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &n)
+            });
         }
     });
 
@@ -2083,6 +2247,7 @@ pub fn OutlineNode(
                                 view! {
                                     <OutlineNode
                                         nav_id=id
+                                        db_id=db_id_sv.get_value()
                                         depth=depth + 1
                                         navs=navs
                                         note_id=nid
@@ -2253,7 +2418,7 @@ pub fn OutlineNode(
                                         }
                                     });
                                     if let Some(nm) = nav_for_meta {
-                                        let _ = sync_sv.try_with_value(|s| s.on_nav_meta_changed(&nm));
+                                        let _ = sync_sv.try_with_value(|s| s.on_nav_meta_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &nm));
                                     }
                                 }
                             >
@@ -2429,7 +2594,7 @@ pub fn OutlineNode(
                                                             let current_id2 = current_id.clone();
                                                             let current_content2 = current_content.clone();
                                                             let _ = sync_sv.try_with_value(|s| {
-                                                                s.on_nav_changed(&current_id2, &current_content2);
+                                                                s.on_nav_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &current_id2, &current_content2);
                                                             });
                                                         }
                                                     }
@@ -3028,7 +3193,7 @@ pub fn OutlineNode(
                                                 editing_value.set(next_state.text.clone());
 
                                                 let nav_id = nav_id_sv.get_value();
-                                                let _ = sync_sv.try_with_value(|s| s.on_nav_changed(&nav_id, &next_state.text));
+                                                let _ = sync_sv.try_with_value(|s| s.on_nav_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &nav_id, &next_state.text));
                                             }
                                             on:paste=move |ev: web_sys::ClipboardEvent| {
                                                 if is_composing.get_untracked() {
@@ -3068,9 +3233,13 @@ pub fn OutlineNode(
                                                 ce_set_caret_utf16(&el, next_state.caret_utf16);
                                                 editing_value.set(next_state.text.clone());
                                                 let nav_id = nav_id_sv.get_value();
-                                                let _ = sync_sv.try_with_value(|s| s.on_nav_changed(&nav_id, &next_state.text));
+                                                let _ = sync_sv.try_with_value(|s| s.on_nav_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &nav_id, &next_state.text));
                                             }
                                             on:input=move |ev: web_sys::Event| {
+                                                if is_composing.get_untracked() {
+                                                    return;
+                                                }
+
                                                 let Some(el) = ev
                                                     .target()
                                                     .and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
@@ -3090,7 +3259,7 @@ pub fn OutlineNode(
                                                     let v = ce_text(&el);
                                                     editing_value.set(v.clone());
                                                     let nav_id = nav_id_sv.get_value();
-                                                    let _ = sync_sv.try_with_value(|s| s.on_nav_changed(&nav_id, &v));
+                                                    let _ = sync_sv.try_with_value(|s| s.on_nav_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &nav_id, &v));
                                                     v
                                                 };
 
@@ -3167,15 +3336,26 @@ pub fn OutlineNode(
                                             }
                                             on:compositionstart=move |_ev: web_sys::CompositionEvent| {
                                                 is_composing.set(true);
+                                                let _ = sync_sv.try_with_value(|s| s.set_ime_composing(true));
                                             }
                                             on:compositionend=move |ev: web_sys::CompositionEvent| {
                                                 is_composing.set(false);
+                                                let _ = sync_sv.try_with_value(|s| s.set_ime_composing(false));
                                                 if let Some(el) = ev
                                                     .target()
                                                     .and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
                                                 {
                                                     let v = ce_text(&el);
-                                                    editing_value.set(v);
+                                                    editing_value.set(v.clone());
+                                                    let nav_id = nav_id_sv.get_value();
+                                                    let _ = sync_sv.try_with_value(|s| {
+                                                        s.on_nav_changed_for_scope(
+                                                            &db_id_sv.get_value(),
+                                                            &note_id_sv.get_value(),
+                                                            &nav_id,
+                                                            &v,
+                                                        )
+                                                    });
                                                 }
                                             }
                                             // on:blur only persists content; it does NOT decide whether we should exit
@@ -3235,15 +3415,26 @@ pub fn OutlineNode(
                                                         return;
                                                     }
 
+                                                    // Persist caret so window/tab switches can restore exact position.
+                                                    let (caret_col, _caret_end, _len_before) = ce_selection_utf16(&el);
+                                                    target_cursor_col.set(Some(caret_col));
+                                                    let db_id_now = app_state
+                                                        .0
+                                                        .current_database_id
+                                                        .get_untracked()
+                                                        .unwrap_or_default();
+                                                    save_note_cursor_state(
+                                                        &db_id_now,
+                                                        &note_id_now,
+                                                        &nav_id_now,
+                                                        caret_col,
+                                                    );
+
                                                     // Ignore stale blur from a node that is no longer active editor.
                                                     // Otherwise old DOM text may overwrite newer split/update results.
                                                     if editing_id.get_untracked().as_deref() != Some(nav_id_now.as_str()) {
                                                         return;
                                                     }
-
-                                                    // Persist caret so window/tab switches can restore exact position.
-                                                    let (caret_col, _caret_end, _len_before) = ce_selection_utf16(&el);
-                                                    target_cursor_col.set(Some(caret_col));
 
                                                     // MVP: always persist on blur.
                                                     navs.update(|xs| {
@@ -3256,7 +3447,7 @@ pub fn OutlineNode(
                                                     let nav_id_now2 = nav_id_now.clone();
                                                     let new_content2 = new_content.clone();
                                                     let _ = sync_sv.try_with_value(|s| {
-                                                        s.on_nav_changed(&nav_id_now2, &new_content2);
+                                                        s.on_nav_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &nav_id_now2, &new_content2);
                                                     });
                                                 }
                                             }
@@ -3351,7 +3542,7 @@ pub fn OutlineNode(
                                                                     let nav_id_now = nav_id_sv.get_value();
                                                                     let sync_sv2 = sync_sv;
                                                                     let _ = sync_sv2.try_with_value(|s| {
-                                                                        s.on_nav_changed(&nav_id_now, &next);
+                                                                        s.on_nav_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &nav_id_now, &next);
                                                                     });
 
                                                                     let caret_after = start_utf16
@@ -3395,7 +3586,7 @@ pub fn OutlineNode(
                                                         let nav_id_now2 = nav_id_now.to_string();
                                                         let current_content2 = current_content.clone();
                                                         let _ = sync_sv.try_with_value(|s| {
-                                                            s.on_nav_changed(&nav_id_now2, &current_content2);
+                                                            s.on_nav_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &nav_id_now2, &current_content2);
                                                         });
                                                     }
                                                 };
@@ -3488,7 +3679,7 @@ pub fn OutlineNode(
                                                         .into_iter()
                                                         .find(|n| n.id == nav_id_now)
                                                     {
-                                                        let _ = sync_sv.try_with_value(|s| s.on_nav_meta_changed(&n));
+                                                        let _ = sync_sv.try_with_value(|s| s.on_nav_meta_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &n));
                                                     }
 
                                                     // Keep editing current node.
@@ -3744,7 +3935,7 @@ pub fn OutlineNode(
                                                                     .into_iter()
                                                                     .find(|n| n.id == nav_id_now)
                                                                 {
-                                                                    let _ = sync_sv.try_with_value(|s| s.on_nav_meta_changed(&n));
+                                                                    let _ = sync_sv.try_with_value(|s| s.on_nav_meta_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &n));
                                                                 }
                                                             }
 
@@ -3832,7 +4023,7 @@ pub fn OutlineNode(
                                                             .into_iter()
                                                             .find(|n| n.id == nav_id_now)
                                                         {
-                                                            let _ = sync_sv.try_with_value(|s| s.on_nav_meta_changed(&n));
+                                                            let _ = sync_sv.try_with_value(|s| s.on_nav_meta_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &n));
                                                         }
                                                     } else {
                                                         // Outdent: become sibling of parent.
@@ -3887,7 +4078,7 @@ pub fn OutlineNode(
                                                             .into_iter()
                                                             .find(|n| n.id == nav_id_now)
                                                         {
-                                                            let _ = sync_sv.try_with_value(|s| s.on_nav_meta_changed(&n));
+                                                            let _ = sync_sv.try_with_value(|s| s.on_nav_meta_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &n));
                                                         }
                                                     }
 
@@ -4033,7 +4224,7 @@ pub fn OutlineNode(
                                                     for id in subtree.into_iter() {
                                                         if let Some(mut n) = all.iter().find(|n| n.id == id).cloned() {
                                                             n.is_delete = true;
-                                                            let _ = sync_sv.try_with_value(|s| s.on_nav_meta_changed(&n));
+                                                            let _ = sync_sv.try_with_value(|s| s.on_nav_meta_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &n));
                                                         }
                                                     }
 
@@ -4082,7 +4273,7 @@ pub fn OutlineNode(
 
                                                             let nav_id_now = nav_id_sv.get_value();
                                                             let _ = sync_sv.try_with_value(|s| {
-                                                                s.on_nav_changed(&nav_id_now, &next.text);
+                                                                s.on_nav_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &nav_id_now, &next.text);
                                                             });
                                                         }
                                                         return;
@@ -4129,7 +4320,7 @@ pub fn OutlineNode(
 
                                                             let nav_id_now = nav_id_sv.get_value();
                                                             let _ = sync_sv.try_with_value(|s| {
-                                                                s.on_nav_changed(&nav_id_now, &next.text);
+                                                                s.on_nav_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &nav_id_now, &next.text);
                                                             });
                                                         }
                                                         return;
@@ -4164,7 +4355,7 @@ pub fn OutlineNode(
 
                                                     // Save current node content via sync controller.
                                                     let _ = sync_sv.try_with_value(|s| {
-                                                        s.on_nav_changed(&nav_id_now, &left_content);
+                                                        s.on_nav_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &nav_id_now, &left_content);
                                                     });
 
                                                     // Create sibling
@@ -4219,11 +4410,11 @@ pub fn OutlineNode(
                                                         .into_iter()
                                                         .find(|n| n.id == new_id)
                                                     {
-                                                        let _ = sync_sv.try_with_value(|s| s.on_nav_meta_changed(&n));
+                                                        let _ = sync_sv.try_with_value(|s| s.on_nav_meta_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &n));
                                                     }
 
                                                     let _ = sync_sv.try_with_value(|s| {
-                                                        s.on_nav_changed(&new_id, &right_content);
+                                                        s.on_nav_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &new_id, &right_content);
                                                     });
 
                                                     // Persist snapshot so refresh won't drop the newly-created node.

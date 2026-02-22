@@ -3,6 +3,13 @@ use crate::models::{AccountInfo, Database, Note};
 use crate::storage::{load_user_from_storage, CURRENT_DB_KEY, SIDEBAR_COLLAPSED_KEY};
 use leptos::prelude::*;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum FocusOwner {
+    None,
+    Title { note_id: String },
+    Outline { note_id: String },
+}
+
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub api_client: RwSignal<ApiClient>,
@@ -31,6 +38,9 @@ pub(crate) struct AppState {
 
     /// One-shot intent: select title text when entering a freshly created note.
     pub pending_title_select_note_id: RwSignal<Option<String>>,
+
+    /// Global focus owner for note page surfaces.
+    pub focus_owner: RwSignal<FocusOwner>,
 }
 
 impl AppState {
@@ -68,6 +78,7 @@ impl AppState {
             sidebar_collapsed: RwSignal::new(sidebar_collapsed),
             search_query: RwSignal::new(String::new()),
             pending_title_select_note_id: RwSignal::new(None),
+            focus_owner: RwSignal::new(FocusOwner::None),
         }
     }
 }

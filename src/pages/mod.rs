@@ -7,7 +7,7 @@ use crate::drafts::{load_note_snapshot, save_note_snapshot};
 use crate::editor::OutlineEditor;
 use crate::linking::extract_bidirectional_links;
 use crate::models::Nav;
-use crate::state::{AppContext, DbUiActions};
+use crate::state::{AppContext, DbUiActions, FocusOwner};
 use crate::storage::{
     load_recent_notes, save_recent_notes, save_user_to_storage, write_recent_db, write_recent_note,
     CURRENT_DB_KEY, SIDEBAR_COLLAPSED_KEY,
@@ -762,6 +762,9 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
                         .0
                         .pending_title_select_note_id
                         .set(Some(note.id.clone()));
+                    app_state.0.focus_owner.set(FocusOwner::Title {
+                        note_id: note.id.clone(),
+                    });
 
                     let root_container = crate::models::Nav {
                         id: root_nav_id_for_create,
@@ -2006,10 +2009,6 @@ pub fn NotePage() -> impl IntoView {
     // Track which note the title_value currently belongs to.
     let title_note_id: RwSignal<String> = RwSignal::new(String::new());
     let title_input_ref: NodeRef<html::Input> = NodeRef::new();
-    let focused_new_note_title_note_id: RwSignal<Option<String>> = RwSignal::new(None);
-    let pending_new_note_title_replace: RwSignal<bool> = RwSignal::new(false);
-    let pending_new_note_title_prefix: RwSignal<Option<String>> = RwSignal::new(None);
-    let title_select_interval_id: RwSignal<Option<i32>> = RwSignal::new(None);
 
     // Optional: focus a specific nav by id (from backlinks click).
     let query = use_query_map();
@@ -2017,22 +2016,21 @@ pub fn NotePage() -> impl IntoView {
     let focused_nav_id: RwSignal<Option<String>> = RwSignal::new(None);
     let suppress_initial_nav_focus: RwSignal<bool> = RwSignal::new(false);
 
-    // New-note title edit mode: suppress initial auto-focus to first nav until title gets selected.
+    // New-note title edit mode: suppress initial auto-focus to first nav while title owns focus.
     Effect::new(move |_| {
         let current_note_id = note_id();
-        let should_suppress = app_state
+        let has_pending_title_intent = app_state
             .0
             .pending_title_select_note_id
             .get()
             .as_deref()
             .map(|id| id == current_note_id.as_str())
             .unwrap_or(false);
-        if should_suppress {
-            suppress_initial_nav_focus.set(true);
-        } else if focused_new_note_title_note_id.get().as_deref() != Some(current_note_id.as_str())
-        {
-            suppress_initial_nav_focus.set(false);
-        }
+        let title_owns_focus = matches!(
+            app_state.0.focus_owner.get(),
+            FocusOwner::Title { note_id } if note_id == current_note_id
+        );
+        suppress_initial_nav_focus.set(has_pending_title_intent || title_owns_focus);
     });
 
     // Keep global selected DB in sync when entering a note route directly (e.g. from Home recents).
@@ -2247,7 +2245,8 @@ pub fn NotePage() -> impl IntoView {
         let draft_title = draft.title.map(|f| f.value).unwrap_or_default();
 
         if !draft_title.is_empty() {
-            // Use local draft (local-first priority).
+            // Use local draft (local-first priority) only when entering a note.
+            // Do not continuously overwrite title while staying on the same note.
             if title_note_id.get() != id {
                 title_note_id.set(id.clone());
                 // Clear any pending debounce.
@@ -2257,37 +2256,24 @@ pub fn NotePage() -> impl IntoView {
                     }
                 }
                 title_debounce_timer_id.set(None);
+                title_value.set(draft_title.clone());
+                title_original.set(draft_title);
             }
-            title_value.set(draft_title.clone());
-            title_original.set(draft_title);
             return;
         }
 
         // No local draft - use note from backend.
         if let Some(n) = app_state.0.notes.get().into_iter().find(|n| n.id == id) {
-            let title_input_focused = title_input_ref
-                .get_untracked()
-                .and_then(|input| {
-                    window()
-                        .document()
-                        .and_then(|doc| doc.active_element())
-                        .map(|active| {
-                            let input_el: web_sys::Element = input.clone().unchecked_into();
-                            active == input_el
-                        })
-                })
-                .unwrap_or(false);
+            // Initialize only when entering a note.
             if title_note_id.get() != id {
                 title_note_id.set(id.clone());
-                title_value.set(n.title.clone());
-                title_original.set(n.title.clone());
-            } else if title_value.get_untracked() != n.title && !title_input_focused {
                 title_value.set(n.title.clone());
                 title_original.set(n.title.clone());
             }
             write_recent_note(&db, &id, &n.title);
         } else if let Some(snap) = load_note_snapshot(&db, &id) {
             if let Some(t) = snap.title {
+                // Initialize only when entering a note.
                 if title_note_id.get() != id {
                     title_note_id.set(id.clone());
                     title_value.set(t.clone());
@@ -2322,75 +2308,24 @@ pub fn NotePage() -> impl IntoView {
             .as_deref()
             .map(|pending_id| pending_id == id.as_str())
             .unwrap_or(false);
-        if !is_new_note_intent && title_note_id.get() != id {
+        if !is_new_note_intent || title_note_id.get() != id {
             return;
         }
-        let current_title = title_value.get();
-        if is_new_note_intent && current_title.trim().is_empty() {
-            return;
-        }
-        let is_local_pending = app_state
-            .0
-            .notes
-            .get()
-            .into_iter()
-            .find(|n| n.id == id)
-            .map(|n| n.created_at == LOCAL_PENDING_NOTE_CREATED_AT)
-            .unwrap_or(false);
-        if !is_new_note_intent && !is_local_pending {
-            return;
-        }
-        if focused_new_note_title_note_id.get().as_deref() == Some(id.as_str()) {
-            return;
-        }
-        focused_new_note_title_note_id.set(Some(id.clone()));
-        pending_new_note_title_replace.set(true);
-        pending_new_note_title_prefix.set(Some(current_title));
-        if is_new_note_intent {
-            suppress_initial_nav_focus.set(true);
-            app_state.0.pending_title_select_note_id.set(None);
-        }
-
-        if let Some(id) = title_select_interval_id.get_untracked() {
-            window().clear_interval_with_handle(id);
-            title_select_interval_id.set(None);
-        }
-
-        let attempts = std::rc::Rc::new(std::cell::Cell::new(0_i32));
-        let attempts2 = attempts.clone();
-        let title_select_interval_id2 = title_select_interval_id;
-
-        let tick = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || {
-            if !pending_new_note_title_replace.get_untracked() {
-                if let Some(id) = title_select_interval_id2.get_untracked() {
-                    window().clear_interval_with_handle(id);
-                    title_select_interval_id2.set(None);
-                }
-                return;
-            }
-
-            attempts2.set(attempts2.get().saturating_add(1));
-
-            if let Some(input) = title_input_ref.get_untracked() {
-                let _ = input.focus();
-                input.select();
-            }
-
-            if attempts2.get() >= 12 {
-                if let Some(id) = title_select_interval_id2.get_untracked() {
-                    window().clear_interval_with_handle(id);
-                    title_select_interval_id2.set(None);
-                }
-            }
+        app_state.0.focus_owner.set(FocusOwner::Title {
+            note_id: id.clone(),
         });
+        app_state.0.pending_title_select_note_id.set(None);
 
-        if let Ok(id) = window().set_interval_with_callback_and_timeout_and_arguments_0(
-            tick.as_ref().unchecked_ref(),
-            30,
-        ) {
-            title_select_interval_id.set(Some(id));
-        }
-        tick.forget();
+        let _ = window().request_animation_frame(
+            wasm_bindgen::closure::Closure::once_into_js(move || {
+                if let Some(input) = title_input_ref.get_untracked() {
+                    let _ = input.focus();
+                    input.select();
+                }
+            })
+            .as_ref()
+            .unchecked_ref(),
+        );
     });
 
     let save_title = move || {
@@ -2409,7 +2344,10 @@ pub fn NotePage() -> impl IntoView {
         }
 
         if new_title.trim().is_empty() {
-            title_value.set(original_title);
+            title_value.set(original_title.clone());
+            if !original_title.trim().is_empty() {
+                let _ = sync_sv.try_with_value(|s| s.on_title_changed(&original_title));
+            }
             return;
         }
 
@@ -2492,31 +2430,7 @@ pub fn NotePage() -> impl IntoView {
                                 .map(|t| t.value())
                                 .unwrap_or_else(|| title_value.get_untracked());
 
-                            if pending_new_note_title_replace.get_untracked() {
-                                if let Some(prefix) = pending_new_note_title_prefix.get_untracked() {
-                                    if !prefix.is_empty() && v.starts_with(&prefix) && v.len() > prefix.len() {
-                                        let trimmed = v[prefix.len()..].to_string();
-                                        title_value.set(trimmed.clone());
-                                        v = trimmed;
-                                    }
-                                }
-                                pending_new_note_title_replace.set(false);
-                                pending_new_note_title_prefix.set(None);
-                                if let Some(id) = title_select_interval_id.get_untracked() {
-                                    window().clear_interval_with_handle(id);
-                                    title_select_interval_id.set(None);
-                                }
-                            }
-
-                            let pending_local = app_state
-                                .0
-                                .notes
-                                .get_untracked()
-                                .into_iter()
-                                .find(|n| n.id == id)
-                                .map(|n| n.created_at == LOCAL_PENDING_NOTE_CREATED_AT)
-                                .unwrap_or(false);
-                            if pending_local {
+                            if v.trim().is_empty() {
                                 return;
                             }
 
@@ -2524,60 +2438,18 @@ pub fn NotePage() -> impl IntoView {
                             // Sync is handled by NoteSyncController (autosave + blur flush).
                             let _ = sync_sv.try_with_value(|s| s.on_title_changed(&v));
                         }
-                        on:blur=move |_| {
-                            if pending_new_note_title_replace.get_untracked() {
-                                let _ = window().request_animation_frame(
-                                    wasm_bindgen::closure::Closure::once_into_js(move || {
-                                        if let Some(input) = title_input_ref.get_untracked() {
-                                            let _ = input.focus();
-                                            input.select();
-                                        }
-                                    })
-                                    .as_ref()
-                                    .unchecked_ref(),
-                                );
+                        on:focus=move |_| {
+                            let id = note_id_untracked();
+                            if id.trim().is_empty() {
                                 return;
                             }
-
+                            app_state.0.focus_owner.set(FocusOwner::Title { note_id: id });
+                        }
+                        on:blur=move |_| {
                             save_title();
-                            pending_new_note_title_replace.set(false);
-                            pending_new_note_title_prefix.set(None);
-                            if let Some(id) = title_select_interval_id.get_untracked() {
-                                window().clear_interval_with_handle(id);
-                                title_select_interval_id.set(None);
-                            }
-                            suppress_initial_nav_focus.set(false);
+                            app_state.0.focus_owner.set(FocusOwner::None);
                         }
                         on:keydown=move |ev: web_sys::KeyboardEvent| {
-                            if pending_new_note_title_replace.get_untracked()
-                                && !ev.alt_key()
-                                && !ev.ctrl_key()
-                                && !ev.meta_key()
-                            {
-                                let key = ev.key();
-                                if key.len() == 1 {
-                                    pending_new_note_title_replace.set(false);
-                                    pending_new_note_title_prefix.set(None);
-                                    if let Some(id) = title_select_interval_id.get_untracked() {
-                                        window().clear_interval_with_handle(id);
-                                        title_select_interval_id.set(None);
-                                    }
-                                }
-
-                                if key == "Backspace" || key == "Delete" {
-                                    ev.prevent_default();
-                                    title_value.set(String::new());
-                                    pending_new_note_title_replace.set(false);
-                                    pending_new_note_title_prefix.set(None);
-                                    if let Some(id) = title_select_interval_id.get_untracked() {
-                                        window().clear_interval_with_handle(id);
-                                        title_select_interval_id.set(None);
-                                    }
-                                    let _ = sync_sv.try_with_value(|s| s.on_title_changed(""));
-                                    return;
-                                }
-                            }
-
                             if ev.key() == "Enter" {
                                 ev.prevent_default();
                                 save_title();

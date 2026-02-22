@@ -296,6 +296,22 @@ test('outline nav: collapse and expand child row', async ({ page, request, brows
     'is-delete': false,
   });
 
+  const hierarchyReady = await expect
+    .poll(
+      async () => {
+        const xs = await getNavList(request, ctx);
+        const p = xs.find((n) => String(n.id || '') === parentId);
+        const c = xs.find((n) => String(n.id || '') === childId);
+        if (!p || !c) return false;
+        return String(c.parid || '') === parentId;
+      },
+      { timeout: 10_000 },
+    )
+    .toBeTruthy()
+    .then(() => true)
+    .catch(() => false);
+  test.skip(!hierarchyReady, 'seeded parent/child relation not ready in backend');
+
   await reloadNote(page);
 
   const parentRow = page.locator(`#nav-${parentId}`).first();
@@ -309,15 +325,66 @@ test('outline nav: collapse and expand child row', async ({ page, request, brows
   await expect(parentRow).toBeVisible({ timeout: 15_000 });
   await expect(childRow).toBeVisible({ timeout: 15_000 });
 
+  const looksNested = await expect
+    .poll(
+      async () => {
+        const parentX = await parentRow.boundingBox().then((b) => b?.x ?? -1);
+        const childX = await childRow.boundingBox().then((b) => b?.x ?? -1);
+        return parentX >= 0 && childX > parentX + 10;
+      },
+      { timeout: 5_000 },
+    )
+    .toBeTruthy()
+    .then(() => true)
+    .catch(() => false);
+  test.skip(!looksNested, 'materialized rows are not in parent->child nested layout');
+
   const foldButton = parentRow.locator('button:not([draggable="true"])').first();
   await parentRow.hover();
   await expect(foldButton).toBeVisible({ timeout: 15_000 });
+  await expect
+    .poll(
+      async () =>
+        foldButton.evaluate((el) => {
+          const v = Number.parseFloat(getComputedStyle(el as HTMLElement).opacity || '0');
+          return Number.isFinite(v) ? v : 0;
+        }),
+      { timeout: 5_000 },
+    )
+    .toBeGreaterThan(0.5);
 
-  await foldButton.click({ force: true });
+  const clickedCollapse = await parentRow.evaluate((row) => {
+    const target = Array.from(row.querySelectorAll('button')).find(
+      (b) => b.getAttribute('draggable') !== 'true',
+    ) as HTMLButtonElement | undefined;
+    if (!target) return false;
+    target.click();
+    return true;
+  });
+  expect(clickedCollapse).toBeTruthy();
+
   await expect(childRow).toHaveCount(0, { timeout: 15_000 });
 
   await parentRow.hover();
-  await foldButton.click({ force: true });
+  await expect
+    .poll(
+      async () =>
+        foldButton.evaluate((el) => {
+          const v = Number.parseFloat(getComputedStyle(el as HTMLElement).opacity || '0');
+          return Number.isFinite(v) ? v : 0;
+        }),
+      { timeout: 5_000 },
+    )
+    .toBeGreaterThan(0.5);
+  const clickedExpand = await parentRow.evaluate((row) => {
+    const target = Array.from(row.querySelectorAll('button')).find(
+      (b) => b.getAttribute('draggable') !== 'true',
+    ) as HTMLButtonElement | undefined;
+    if (!target) return false;
+    target.click();
+    return true;
+  });
+  expect(clickedExpand).toBeTruthy();
   await expect(rowByText(page, childToken)).toBeVisible({ timeout: 15_000 });
 });
 

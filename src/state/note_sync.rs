@@ -39,6 +39,7 @@ pub(crate) struct NoteSyncController {
     current_db_id: RwSignal<String>,
     current_note_id: RwSignal<String>,
     current_editing_nav_id: RwSignal<Option<String>>,
+    ime_composing: RwSignal<bool>,
 
     /// Per-nav debounce timers.
     autosave_ms: i32,
@@ -51,6 +52,7 @@ pub(crate) struct NoteSyncController {
     /// Global listeners (keep handles alive).
     _online_handle: StoredValue<Option<WindowListenerHandle>>,
     _pagehide_handle: StoredValue<Option<WindowListenerHandle>>,
+    _beforeunload_handle: StoredValue<Option<WindowListenerHandle>>,
 }
 
 impl NoteSyncController {
@@ -98,6 +100,7 @@ impl NoteSyncController {
         let current_db_id = RwSignal::new(String::new());
         let current_note_id = RwSignal::new(String::new());
         let current_editing_nav_id = RwSignal::new(None);
+        let ime_composing = RwSignal::new(false);
 
         let autosave_ms = 1200;
         let autosave_timers = Arc::new(Mutex::new(HashMap::new()));
@@ -108,6 +111,7 @@ impl NoteSyncController {
         // We'll fill these in start() so they can reference `self` via clones.
         let _online_handle = StoredValue::new(None);
         let _pagehide_handle = StoredValue::new(None);
+        let _beforeunload_handle = StoredValue::new(None);
 
         let s = Self {
             app_state,
@@ -117,12 +121,14 @@ impl NoteSyncController {
             current_db_id,
             current_note_id,
             current_editing_nav_id,
+            ime_composing,
             autosave_ms,
             autosave_timers,
             retry_timer_id,
             retry_interval_ms,
             _online_handle,
             _pagehide_handle,
+            _beforeunload_handle,
         };
 
         s.start_global_listeners();
@@ -219,22 +225,39 @@ impl NoteSyncController {
         self.current_editing_nav_id.set(nav_id);
     }
 
-    /// Called by OutlineEditor on each input.
-    pub fn on_nav_changed(&self, nav_id: &str, content: &str) {
-        let Some((db_id, note_id)) = self.db_note_untracked() else {
-            return;
-        };
+    /// Called by editor IME handlers.
+    pub fn set_ime_composing(&self, composing: bool) {
+        self.ime_composing.set(composing);
+    }
 
-        touch_nav(&db_id, &note_id, nav_id, content);
+    /// Called by OutlineEditor when db/note ids are known explicitly (preferred).
+    pub fn on_nav_changed_for_scope(
+        &self,
+        db_id: &str,
+        note_id: &str,
+        nav_id: &str,
+        content: &str,
+    ) {
+        if db_id.trim().is_empty() || note_id.trim().is_empty() || nav_id.trim().is_empty() {
+            return;
+        }
+
+        touch_nav(db_id, note_id, nav_id, content);
         self.schedule_autosave(format!("nav:{db_id}:{note_id}:{nav_id}"));
     }
 
-    pub fn on_nav_meta_changed(&self, nav: &crate::models::Nav) {
-        let Some((db_id, note_id)) = self.db_note_untracked() else {
+    /// Called by OutlineEditor when db/note ids are known explicitly (preferred).
+    pub fn on_nav_meta_changed_for_scope(
+        &self,
+        db_id: &str,
+        note_id: &str,
+        nav: &crate::models::Nav,
+    ) {
+        if db_id.trim().is_empty() || note_id.trim().is_empty() || nav.id.trim().is_empty() {
             return;
-        };
+        }
 
-        touch_nav_meta(&db_id, &note_id, nav);
+        touch_nav_meta(db_id, note_id, nav);
         self.schedule_autosave(format!("meta:{db_id}:{note_id}:{}", nav.id));
     }
 
@@ -365,7 +388,7 @@ impl NoteSyncController {
                 }
                 Err(e) => {
                     s2.mark_backend_offline_api(&e);
-                    mark_nav_sync_failed(&db_id, &note_id, &item_id);
+                    mark_nav_sync_failed(&db_id, &note_id, &nav_id);
                 }
             }
         });
@@ -644,6 +667,17 @@ impl NoteSyncController {
                 s3.pagehide_flush();
             });
         self._pagehide_handle.set_value(Some(pagehide));
+
+        // beforeunload -> warn user when there are unsynced local drafts.
+        // Note: modern browsers ignore custom text and show a generic confirmation.
+        let beforeunload =
+            window_event_listener(ev::beforeunload, move |ev: web_sys::BeforeUnloadEvent| {
+                if !list_dirty_notes(1).is_empty() {
+                    ev.prevent_default();
+                    ev.set_return_value("");
+                }
+            });
+        self._beforeunload_handle.set_value(Some(beforeunload));
     }
 
     fn pagehide_flush(&self) {

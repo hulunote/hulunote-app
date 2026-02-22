@@ -119,63 +119,56 @@ export async function ensureAuthenticated(page: Page): Promise<void> {
 }
 
 export async function openFreshNote(page: Page): Promise<void> {
+  const parseNoteId = (url: string): string => url.match(/\/note\/([^/?#]+)/)?.[1] || '';
   const tokenExists = await page.evaluate(() => Boolean(localStorage.getItem('hulunote_token'))).catch(() => false);
   if (!tokenExists) throw new Error('Authentication missing before opening note page');
 
   const passwordInput = page.locator('input[type="password"]').first();
   if ((await passwordInput.count()) > 0) throw new Error('Still on login page while opening note page');
 
-  // Prefer creating a truly fresh note for deterministic E2E state.
-  const globalNewNoteButton = page.getByRole('button', { name: 'New Note' }).first();
-  if ((await globalNewNoteButton.count()) > 0) {
-    const beforeUrl = page.url();
-    await globalNewNoteButton.click();
-    await page.waitForURL(/\/db\/.+\/note\/.+/, { timeout: 15_000 });
-    if (!beforeUrl.match(/\/db\/.+\/note\/.+/) || page.url() !== beforeUrl) {
-      await page.waitForSelector('.outline-row [contenteditable="true"], .outline-row .cursor-text', {
-        timeout: 20_000,
-      });
-      return;
-    }
-  }
-
-  const noteLink = page.locator('a[href*="/note/"]').first();
-  const dbLink = page.locator('a[href*="/db/"]').first();
   const newNoteButton = page.getByRole('button', { name: 'New Note' }).first();
-
-  await expect
-    .poll(
-      async () =>
-        page.url().match(/\/db\/.+\/note\/.+/) !== null ||
-        (await noteLink.count()) > 0 ||
-        (await dbLink.count()) > 0 ||
-        (await newNoteButton.count()) > 0,
-      { timeout: 20_000 },
-    )
-    .toBeTruthy();
-
-  if (page.url().match(/\/db\/.+\/note\/.+/)) return;
-
-  if ((await noteLink.count()) > 0) {
-    await noteLink.click();
-    await page.waitForURL(/\/db\/.+\/note\/.+/, { timeout: 10_000 });
-  } else if ((await dbLink.count()) > 0) {
-    await dbLink.click();
-    await expect(newNoteButton).toBeVisible({ timeout: 10_000 });
-    await newNoteButton.click();
-    await page.waitForURL(/\/db\/.+\/note\/.+/, { timeout: 10_000 });
-  } else if ((await newNoteButton.count()) > 0) {
-    await newNoteButton.click();
-    await page.waitForURL(/\/db\/.+\/note\/.+/, { timeout: 10_000 });
-  } else {
-    throw new Error('Cannot locate note/db entry point (no note link, db link, or New Note button)');
+  const hasNewNoteButton = await newNoteButton.isVisible().catch(() => false);
+  if (!hasNewNoteButton) {
+    const firstDbLink = page.locator('a[href^="/db/"]').first();
+    await expect(firstDbLink).toBeVisible({ timeout: 20_000 });
+    const dbHref = await firstDbLink.getAttribute('href');
+    if (!dbHref) throw new Error('First database link has empty href');
+    await page.goto(dbHref, { waitUntil: 'domcontentloaded' });
+    await expect(newNoteButton).toBeVisible({ timeout: 20_000 });
   }
 
-  const noteNewButton = page.getByRole('button', { name: 'New Note' }).first();
-  if ((await noteNewButton.count()) > 0 && page.url().match(/\/db\/[^/]+$/)) {
-    await noteNewButton.click();
-    await page.waitForURL(/\/db\/.+\/note\/.+/, { timeout: 10_000 });
+  const beforeNoteId = parseNoteId(page.url());
+  let created = false;
+  for (let i = 0; i < 2; i += 1) {
+    await expect(newNoteButton).toBeVisible({ timeout: 5_000 });
+    const clicked = await newNoteButton
+      .click({ timeout: 5_000 })
+      .then(() => true)
+      .catch(() => false);
+    if (!clicked) {
+      continue;
+    }
+
+    created = await expect
+      .poll(
+        async () => {
+          const id = parseNoteId(page.url());
+          return id.length > 0 && id !== beforeNoteId;
+        },
+        { timeout: 8_000 },
+      )
+      .toBeTruthy()
+      .then(() => true)
+      .catch(() => false);
+    if (created) {
+      break;
+    }
+    await page.waitForTimeout(150);
   }
+  if (!created) {
+    throw new Error(`New Note did not navigate to a fresh note (before=${beforeNoteId}, after=${parseNoteId(page.url())})`);
+  }
+
   await page.waitForSelector('.outline-row [contenteditable="true"], .outline-row .cursor-text', {
     timeout: 20_000,
   });
