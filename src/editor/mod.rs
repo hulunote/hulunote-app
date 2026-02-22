@@ -1383,6 +1383,7 @@ fn reconcile_local_nav_content(db_id: &str, note_id: &str, navs: &mut [Nav]) {
 pub fn OutlineEditor(
     note_id: impl Fn() -> String + Clone + Send + Sync + 'static,
     focused_nav_id: RwSignal<Option<String>>,
+    #[prop(default = false.into(), into)] suppress_initial_nav_focus: Signal<bool>,
 ) -> impl IntoView {
     let app_state = expect_context::<AppContext>();
 
@@ -1489,10 +1490,19 @@ pub fn OutlineEditor(
                 let maybe_tmp =
                     sync.ensure_note_has_start_node_local(&db_id_now, &id, snap.title, &mut xs, "");
                 if let Some(tmp_id) = maybe_tmp {
-                    editing_id.set(Some(tmp_id.clone()));
-                    editing_value.set(String::new());
-                    editing_snapshot.set(Some((tmp_id.clone(), String::new())));
-                    target_cursor_col.set(Some(0));
+                    let suppress_by_new_note_intent = app_state
+                        .0
+                        .pending_title_select_note_id
+                        .get_untracked()
+                        .as_deref()
+                        .map(|pending_id| pending_id == id.as_str())
+                        .unwrap_or(false);
+                    if !suppress_initial_nav_focus.get_untracked() && !suppress_by_new_note_intent {
+                        editing_id.set(Some(tmp_id.clone()));
+                        editing_value.set(String::new());
+                        editing_snapshot.set(Some((tmp_id.clone(), String::new())));
+                        target_cursor_col.set(Some(0));
+                    }
                 }
 
                 reconcile_local_nav_content(&db_id_now, &id, &mut xs);
@@ -1540,10 +1550,21 @@ pub fn OutlineEditor(
                         sync2.ensure_note_has_start_node_local(&db_id2, &id, title2, &mut xs, "");
 
                     if let Some(tmp_id) = maybe_tmp {
-                        editing_id.set(Some(tmp_id.clone()));
-                        editing_value.set(String::new());
-                        editing_snapshot.set(Some((tmp_id.clone(), String::new())));
-                        target_cursor_col.set(Some(0));
+                        let suppress_by_new_note_intent = app_state
+                            .0
+                            .pending_title_select_note_id
+                            .get_untracked()
+                            .as_deref()
+                            .map(|pending_id| pending_id == id.as_str())
+                            .unwrap_or(false);
+                        if !suppress_initial_nav_focus.get_untracked()
+                            && !suppress_by_new_note_intent
+                        {
+                            editing_id.set(Some(tmp_id.clone()));
+                            editing_value.set(String::new());
+                            editing_snapshot.set(Some((tmp_id.clone(), String::new())));
+                            target_cursor_col.set(Some(0));
+                        }
                     } else {
                         // Persist snapshot for normal notes.
                         save_note_snapshot(&db_id2, &id, title, xs.clone(), crate::util::now_ms());

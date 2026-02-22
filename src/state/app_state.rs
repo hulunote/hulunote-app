@@ -28,6 +28,9 @@ pub(crate) struct AppState {
 
     /// Sidebar search query (Phase 3: UI + routing only).
     pub search_query: RwSignal<String>,
+
+    /// One-shot intent: select title text when entering a freshly created note.
+    pub pending_title_select_note_id: RwSignal<Option<String>>,
 }
 
 impl AppState {
@@ -64,6 +67,7 @@ impl AppState {
             current_database_id: RwSignal::new(current_database_id),
             sidebar_collapsed: RwSignal::new(sidebar_collapsed),
             search_query: RwSignal::new(String::new()),
+            pending_title_select_note_id: RwSignal::new(None),
         }
     }
 }

@@ -179,6 +179,85 @@ test('outline editor: shift+enter keeps editing in same row', async ({ page, bro
     .toBeTruthy();
 });
 
+test('new note title: should stay focused, selected, and replace untitled on first input', async ({ page, browserName }) => {
+  test.setTimeout(90_000);
+  test.skip(browserName !== 'chromium', 'outline editor flow is validated on chromium');
+
+  const typed = `pw-title-${Date.now()}`;
+
+  await ensureAuthenticated(page);
+  await openFreshNote(page);
+
+  const beforeUrl = page.url();
+  const beforeNoteId = beforeUrl.match(/\/note\/([^/?#]+)/)?.[1] || '';
+  const newNoteButton = page.getByRole('button', { name: 'New Note' }).first();
+  await expect(newNoteButton).toBeVisible({ timeout: 15_000 });
+
+  let created = false;
+  for (let i = 0; i < 2; i += 1) {
+    await newNoteButton.click();
+    created = await expect
+      .poll(
+        async () => {
+          const url = page.url();
+          const noteId = url.match(/\/note\/([^/?#]+)/)?.[1] || '';
+          return noteId.length > 0 && noteId !== beforeNoteId && url !== beforeUrl;
+        },
+        { timeout: 8_000 },
+      )
+      .toBeTruthy()
+      .then(() => true)
+      .catch(() => false);
+    if (created) break;
+  }
+  await expect(created).toBeTruthy();
+  await page.waitForLoadState('domcontentloaded');
+
+  const titleInput = page.locator('input.text-3xl').first();
+  await expect(titleInput).toBeVisible({ timeout: 20_000 });
+
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(() => {
+          const input = document.querySelector('input.text-3xl') as HTMLInputElement | null;
+          if (!input) return false;
+          const valueLen = input.value.length;
+          const isActive = document.activeElement === input;
+          const start = input.selectionStart ?? -1;
+          const end = input.selectionEnd ?? -1;
+          return isActive && valueLen > 0 && start === 0 && end === valueLen;
+        }),
+      { timeout: 12_000 },
+    )
+    .toBeTruthy();
+
+  await page.keyboard.press('Backspace');
+
+  await expect
+    .poll(async () => titleInput.inputValue(), { timeout: 8_000 })
+    .toBe('');
+
+  await page.keyboard.type(typed);
+
+  await expect
+    .poll(async () => titleInput.inputValue(), { timeout: 8_000 })
+    .toBe(typed);
+
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(() => {
+          const active = document.activeElement as HTMLElement | null;
+          if (!active) return false;
+          if (active.tagName.toLowerCase() !== 'input') return false;
+          return active.closest('.outline-editor') === null;
+        }),
+      { timeout: 8_000 },
+    )
+    .toBeTruthy();
+});
+
 test('outline nav: collapse and expand child row', async ({ page, request, browserName }) => {
   test.setTimeout(90_000);
   test.skip(browserName !== 'chromium', 'outline editor flow is validated on chromium');
