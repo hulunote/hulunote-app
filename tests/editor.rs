@@ -51,6 +51,14 @@ async fn with_editor<T>(initial_text: &str, f: impl FnOnce(web_sys::HtmlElement)
         .ok()
         .flatten()
         .and_then(|e| e.dyn_into::<web_sys::HtmlElement>().ok())
+        .or_else(|| {
+            // Newer editor DOM can mount directly in editing mode without a display row.
+            root_he
+                .query_selector("[role='textbox'][contenteditable='true']")
+                .ok()
+                .flatten()
+                .and_then(|e| e.dyn_into::<web_sys::HtmlElement>().ok())
+        })
         .unwrap_or_else(|| panic!("display row not found; html={}", root_he.inner_html()));
     let md = web_sys::MouseEvent::new("mousedown").expect("create mousedown");
     let _ = display.dispatch_event(&md);
