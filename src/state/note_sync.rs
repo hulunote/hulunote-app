@@ -199,7 +199,10 @@ impl NoteSyncController {
             .collect();
         let root_container_id = match root_candidates.as_slice() {
             [root] => root.id.clone(),
-            [] => panic!("note structure invalid: missing ROOT node for note_id={}", note_id),
+            [] => panic!(
+                "note structure invalid: missing ROOT node for note_id={}",
+                note_id
+            ),
             _ => panic!(
                 "note structure invalid: multiple ROOT nodes for note_id={} count={}",
                 note_id,
