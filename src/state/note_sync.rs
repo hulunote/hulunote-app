@@ -2,8 +2,8 @@ use crate::api::CreateOrUpdateNavRequest;
 use crate::drafts::{
     get_due_unsynced_nav_drafts, get_due_unsynced_nav_meta_drafts, get_unsynced_nav_drafts,
     list_dirty_notes, mark_nav_meta_sync_failed, mark_nav_meta_synced, mark_nav_sync_failed,
-    mark_nav_synced, mark_title_sync_failed, mark_title_synced, touch_nav, touch_nav_meta,
-    touch_title, NavMetaDraft,
+    mark_nav_synced, mark_title_sync_failed, mark_title_synced, touch_nav_content_local_first,
+    touch_nav_meta, touch_title, NavMetaDraft,
 };
 use crate::state::AppContext;
 use crate::util::now_ms;
@@ -165,7 +165,7 @@ impl NoteSyncController {
         &self,
         db_id: &str,
         note_id: &str,
-        note_title: Option<String>,
+        note_title: String,
         navs: &mut Vec<crate::models::Nav>,
         initial_content: &str,
     ) -> Option<String> {
@@ -203,13 +203,7 @@ impl NoteSyncController {
         navs.push(nav.clone());
 
         // Persist snapshot so refresh won't drop it.
-        crate::drafts::save_note_snapshot(
-            db_id,
-            note_id,
-            note_title,
-            navs.clone(),
-            crate::util::now_ms(),
-        );
+        crate::drafts::save_note_snapshot(db_id, note_id, note_title, navs.clone());
 
         // Persist drafts so sync worker can create it on backend when online.
         if !initial_content.is_empty() {
@@ -242,7 +236,7 @@ impl NoteSyncController {
             return;
         }
 
-        touch_nav(db_id, note_id, nav_id, content);
+        touch_nav_content_local_first(db_id, note_id, nav_id, content);
         self.schedule_autosave(format!("nav:{db_id}:{note_id}:{nav_id}"));
     }
 
@@ -308,28 +302,21 @@ impl NoteSyncController {
 
             // Flush title - read from note draft's title field.
             let draft = crate::drafts::load_note_draft(&db_id, &note_id_for_title);
-            let Some(title) = draft.title else {
-                return;
-            };
-            if title.updated_ms <= title.synced_ms {
+            let title = draft.title;
+            if draft.sync.updated_ms <= draft.sync.synced_ms || !draft.sync.title_dirty {
                 return;
             }
 
             let api_client = self.app_state.0.api_client.get_untracked();
             let db_id_clone = db_id.clone();
             let note_id_clone = note_id_for_title.to_string();
-            let app_state_notes = self.app_state.0.notes;
             spawn_local(async move {
                 match api_client
                     .update_note_title(&note_id_clone, &title.value)
                     .await
                 {
                     Ok(_) => {
-                        mark_title_synced(&db_id_clone, &note_id_clone, title.updated_ms);
-                        // Refresh notes list after successful title update.
-                        if let Ok(notes) = api_client.get_all_note_list(&db_id_clone).await {
-                            app_state_notes.set(notes);
-                        }
+                        mark_title_synced(&db_id_clone, &note_id_clone, draft.sync.updated_ms);
                     }
                     Err(e) => {
                         leptos::logging::log!(
@@ -497,15 +484,17 @@ impl NoteSyncController {
             // title (limit to one per tick, but do not block nav/meta retries)
             let draft = crate::drafts::load_note_draft(&db_id, &note_id);
             if picked_title.is_empty() {
-                if let Some(title) = draft.title {
-                    if title.updated_ms > title.synced_ms && title.next_retry_ms <= now {
-                        picked_title.push((
-                            db_id.clone(),
-                            note_id.clone(),
-                            title.value.clone(),
-                            title.updated_ms,
-                        ));
-                    }
+                let title = draft.title;
+                if draft.sync.title_dirty
+                    && draft.sync.updated_ms > draft.sync.synced_ms
+                    && draft.sync.next_retry_ms <= now
+                {
+                    picked_title.push((
+                        db_id.clone(),
+                        note_id.clone(),
+                        title.value.clone(),
+                        draft.sync.updated_ms,
+                    ));
                 }
             }
 
@@ -692,33 +681,32 @@ impl NoteSyncController {
 
         // Flush title draft.
         let draft = crate::drafts::load_note_draft(&db_id, &note_id);
-        if let Some(title) = draft.title {
-            if title.updated_ms > title.synced_ms {
-                let api_client = self.app_state.0.api_client.get_untracked();
-                let db_id_clone = db_id.clone();
-                let note_id_clone = note_id.clone();
-                let title_value = title.value.clone();
-                let updated_ms = title.updated_ms;
-                spawn_local(async move {
-                    match api_client
-                        .update_note_title(&note_id_clone, &title_value)
-                        .await
-                    {
-                        Ok(_) => {
-                            mark_title_synced(&db_id_clone, &note_id_clone, updated_ms);
-                        }
-                        Err(e) => {
-                            leptos::logging::log!(
-                                "[sync:title] pagehide flush failed db_id={} note_id={} title_len={} err={}",
-                                db_id_clone,
-                                note_id_clone,
-                                title_value.len(),
-                                e
-                            );
-                        }
+        let title = draft.title;
+        if draft.sync.title_dirty && draft.sync.updated_ms > draft.sync.synced_ms {
+            let api_client = self.app_state.0.api_client.get_untracked();
+            let db_id_clone = db_id.clone();
+            let note_id_clone = note_id.clone();
+            let title_value = title.value.clone();
+            let updated_ms = draft.sync.updated_ms;
+            spawn_local(async move {
+                match api_client
+                    .update_note_title(&note_id_clone, &title_value)
+                    .await
+                {
+                    Ok(_) => {
+                        mark_title_synced(&db_id_clone, &note_id_clone, updated_ms);
                     }
-                });
-            }
+                    Err(e) => {
+                        leptos::logging::log!(
+                            "[sync:title] pagehide flush failed db_id={} note_id={} title_len={} err={}",
+                            db_id_clone,
+                            note_id_clone,
+                            title_value.len(),
+                            e
+                        );
+                    }
+                }
+            });
         }
 
         // Flush nav content drafts.

@@ -7,14 +7,21 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub(crate) struct FieldDraft {
     pub value: String,
-    pub updated_ms: i64,
-    pub synced_ms: i64,
+}
 
-    /// Retry queue state (local-first sync): when a backend sync fails, we schedule a retry.
-    #[serde(default)]
-    pub retry_count: u32,
-    #[serde(default)]
-    pub next_retry_ms: i64,
+fn normalize_title_value(title: &str) -> String {
+    let t = title.trim();
+    if t.is_empty() {
+        "Untitled".to_string()
+    } else {
+        title.to_string()
+    }
+}
+
+fn default_title_draft() -> FieldDraft {
+    FieldDraft {
+        value: "Untitled".to_string(),
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -32,15 +39,25 @@ pub(crate) struct NavDraftState {
     pub content: String,
     #[serde(default)]
     pub meta: Option<NavMetaDraft>,
-    pub updated_ms: i64,
-    pub synced_ms: i64,
     /// Whether content channel has unsynced local edits.
     #[serde(default)]
     pub content_dirty: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub(crate) struct NoteSyncState {
+    pub updated_ms: i64,
+    pub synced_ms: i64,
     #[serde(default)]
     pub retry_count: u32,
     #[serde(default)]
     pub next_retry_ms: i64,
+    #[serde(default)]
+    pub title_dirty: bool,
+    #[serde(default)]
+    pub nav_content_dirty: bool,
+    #[serde(default)]
+    pub nav_meta_dirty: bool,
 }
 
 pub(crate) const NOTE_DRAFT_SCHEMA_20260217: u32 = 20260217;
@@ -52,13 +69,14 @@ pub(crate) struct NoteDraft {
 
     pub db_id: String,
     pub note_id: String,
-    pub updated_ms: i64,
-
-    pub title: Option<FieldDraft>,
+    #[serde(default = "default_title_draft")]
+    pub title: FieldDraft,
 
     /// nav_id -> atomic draft state (content + metadata + sync state)
     #[serde(default)]
     pub nav_state: BTreeMap<String, NavDraftState>,
+    #[serde(default)]
+    pub sync: NoteSyncState,
 }
 
 impl Default for NoteDraft {
@@ -67,9 +85,9 @@ impl Default for NoteDraft {
             schema_version: NOTE_DRAFT_SCHEMA_CURRENT,
             db_id: String::new(),
             note_id: String::new(),
-            updated_ms: 0,
-            title: None,
+            title: default_title_draft(),
             nav_state: BTreeMap::new(),
+            sync: NoteSyncState::default(),
         }
     }
 }
@@ -122,42 +140,62 @@ fn index_remove_note(db_id: &str, note_id: &str) {
 }
 
 fn is_note_fully_synced(d: &NoteDraft) -> bool {
-    let title_synced = d
-        .title
-        .as_ref()
-        .map(|f| f.updated_ms <= f.synced_ms)
-        .unwrap_or(true);
-    if !title_synced {
-        return false;
-    }
+    d.sync.updated_ms <= d.sync.synced_ms
+        && !d.sync.title_dirty
+        && !d.sync.nav_content_dirty
+        && !d.sync.nav_meta_dirty
+}
 
-    d.nav_state
-        .values()
-        .all(|b| (!b.content_dirty || b.updated_ms <= b.synced_ms) && b.meta.is_none())
+fn refresh_channel_dirty_flags(d: &mut NoteDraft) {
+    d.sync.nav_content_dirty = d.nav_state.values().any(|b| b.content_dirty);
+    d.sync.nav_meta_dirty = d.nav_state.values().any(|b| b.meta.is_some());
+}
+
+fn mark_note_dirty_now(d: &mut NoteDraft, now: i64) {
+    d.sync.updated_ms = now;
 }
 
 fn index_prune_if_synced(db_id: &str, note_id: &str) {
     let d = load_note_draft(db_id, note_id);
     if is_note_fully_synced(&d) {
-        // Remove from dirty index and clear per-note draft payload to avoid storage buildup.
+        // Keep draft only while local changes exist.
         index_remove_note(db_id, note_id);
         remove_storage_key(&key(db_id, note_id));
     }
 }
 
 pub(crate) fn list_dirty_notes(limit: usize) -> Vec<(String, String)> {
-    let ix = index_load();
-    let mut notes_with_updated: Vec<(String, String, i64)> = ix
-        .notes
-        .into_iter()
-        .filter_map(|k| {
-            let mut parts = k.split("::");
-            let db = parts.next()?.to_string();
-            let note = parts.next()?.to_string();
-            let updated_ms = load_note_draft(&db, &note).updated_ms;
-            Some((db, note, updated_ms))
-        })
-        .collect();
+    let mut ix = index_load();
+    let mut to_remove: Vec<String> = vec![];
+    let mut notes_with_updated: Vec<(String, String, i64)> = vec![];
+
+    for k in ix.notes.iter() {
+        let mut parts = k.split("::");
+        let Some(db) = parts.next().map(|v| v.to_string()) else {
+            to_remove.push(k.clone());
+            continue;
+        };
+        let Some(note) = parts.next().map(|v| v.to_string()) else {
+            to_remove.push(k.clone());
+            continue;
+        };
+
+        let d = load_note_draft(&db, &note);
+        if is_note_fully_synced(&d) {
+            to_remove.push(k.clone());
+            remove_storage_key(&key(&db, &note));
+            continue;
+        }
+
+        notes_with_updated.push((db, note, d.sync.updated_ms));
+    }
+
+    if !to_remove.is_empty() {
+        for k in to_remove {
+            ix.notes.remove(&k);
+        }
+        index_save(&ix);
+    }
 
     // Prefer recently-updated dirty notes to avoid starvation caused by lexicographic ordering.
     notes_with_updated.sort_by_key(|x| std::cmp::Reverse(x.2));
@@ -177,6 +215,8 @@ fn normalize_note_draft_identity(mut d: NoteDraft, db_id: &str, note_id: &str) -
     if d.note_id.trim().is_empty() {
         d.note_id = note_id.to_string();
     }
+    d.title.value = normalize_title_value(&d.title.value);
+    refresh_channel_dirty_flags(&mut d);
     d
 }
 
@@ -228,13 +268,11 @@ pub(crate) fn touch_title(db_id: &str, note_id: &str, title: &str) {
     let mut d = load_note_draft(db_id, note_id);
     let now = now_ms();
 
-    let mut f = d.title.unwrap_or_default();
-    f.value = title.to_string();
-    f.updated_ms = now;
-    // Do not change synced_ms here.
-
-    d.title = Some(f);
-    d.updated_ms = now;
+    let mut f = d.title;
+    f.value = normalize_title_value(title);
+    d.title = f;
+    d.sync.title_dirty = true;
+    mark_note_dirty_now(&mut d, now);
 
     save_note_draft(&d);
 }
@@ -251,10 +289,10 @@ pub(crate) fn touch_nav(db_id: &str, note_id: &str, nav_id: &str, content: &str)
 
     let b = d.nav_state.entry(nav_id.to_string()).or_default();
     b.content = content.to_string();
-    b.updated_ms = now;
     b.content_dirty = true;
 
-    d.updated_ms = now;
+    d.sync.nav_content_dirty = true;
+    mark_note_dirty_now(&mut d, now);
 
     save_note_draft(&d);
 }
@@ -279,16 +317,9 @@ pub(crate) fn touch_nav_meta(db_id: &str, note_id: &str, nav: &Nav) {
 
     let b = d.nav_state.entry(nav.id.clone()).or_default();
     b.meta = Some(meta);
-    b.updated_ms = now;
-
-    d.updated_ms = now;
+    d.sync.nav_meta_dirty = true;
+    mark_note_dirty_now(&mut d, now);
     save_note_draft(&d);
-}
-
-fn update_field_synced(f: &mut FieldDraft, synced_ms: i64) {
-    f.synced_ms = f.synced_ms.max(synced_ms);
-    f.retry_count = 0;
-    f.next_retry_ms = 0;
 }
 
 pub(crate) fn mark_title_synced(db_id: &str, note_id: &str, synced_ms: i64) {
@@ -297,10 +328,11 @@ pub(crate) fn mark_title_synced(db_id: &str, note_id: &str, synced_ms: i64) {
     }
 
     let mut d = load_note_draft(db_id, note_id);
-    let mut f = d.title.unwrap_or_default();
-    update_field_synced(&mut f, synced_ms);
-    d.title = Some(f);
-    d.updated_ms = now_ms();
+    d.sync.title_dirty = false;
+    d.sync.synced_ms = d.sync.synced_ms.max(synced_ms);
+    d.sync.retry_count = 0;
+    d.sync.next_retry_ms = 0;
+    refresh_channel_dirty_flags(&mut d);
     save_note_draft(&d);
 
     index_prune_if_synced(db_id, note_id);
@@ -314,14 +346,9 @@ pub(crate) fn mark_title_sync_failed(db_id: &str, note_id: &str) {
     index_touch_note(db_id, note_id);
 
     let mut d = load_note_draft(db_id, note_id);
-    let mut f = d.title.unwrap_or_default();
-
-    f.retry_count = f.retry_count.saturating_add(1);
-    let delay = compute_retry_delay_ms(f.retry_count);
-    f.next_retry_ms = now_ms().saturating_add(delay);
-
-    d.title = Some(f);
-    d.updated_ms = now_ms();
+    d.sync.retry_count = d.sync.retry_count.saturating_add(1);
+    let delay = compute_retry_delay_ms(d.sync.retry_count);
+    d.sync.next_retry_ms = now_ms().saturating_add(delay);
     save_note_draft(&d);
 }
 
@@ -332,12 +359,11 @@ pub(crate) fn mark_nav_synced(db_id: &str, note_id: &str, nav_id: &str, synced_m
 
     let mut d = load_note_draft(db_id, note_id);
     let b = d.nav_state.entry(nav_id.to_string()).or_default();
-    b.synced_ms = b.synced_ms.max(synced_ms);
     b.content_dirty = false;
-    b.retry_count = 0;
-    b.next_retry_ms = 0;
-
-    d.updated_ms = now_ms();
+    d.sync.synced_ms = d.sync.synced_ms.max(synced_ms);
+    d.sync.retry_count = 0;
+    d.sync.next_retry_ms = 0;
+    refresh_channel_dirty_flags(&mut d);
     save_note_draft(&d);
 
     index_prune_if_synced(db_id, note_id);
@@ -353,12 +379,11 @@ pub(crate) fn mark_nav_meta_synced(db_id: &str, note_id: &str, nav_id: &str, syn
 
     // Meta sync is tracked independently from content sync:
     // clearing `meta` marks metadata as converged while keeping content channel untouched.
-    let _ = synced_ms;
     b.meta = None;
-    b.retry_count = 0;
-    b.next_retry_ms = 0;
-
-    d.updated_ms = now_ms();
+    d.sync.synced_ms = d.sync.synced_ms.max(synced_ms);
+    d.sync.retry_count = 0;
+    d.sync.next_retry_ms = 0;
+    refresh_channel_dirty_flags(&mut d);
     save_note_draft(&d);
 
     index_prune_if_synced(db_id, note_id);
@@ -379,13 +404,10 @@ pub(crate) fn mark_nav_sync_failed(db_id: &str, note_id: &str, nav_id: &str) {
     index_touch_note(db_id, note_id);
 
     let mut d = load_note_draft(db_id, note_id);
-    let b = d.nav_state.entry(nav_id.to_string()).or_default();
-
-    b.retry_count = b.retry_count.saturating_add(1);
-    let delay = compute_retry_delay_ms(b.retry_count);
-    b.next_retry_ms = now_ms().saturating_add(delay);
-
-    d.updated_ms = now_ms();
+    let _ = d.nav_state.entry(nav_id.to_string()).or_default();
+    d.sync.retry_count = d.sync.retry_count.saturating_add(1);
+    let delay = compute_retry_delay_ms(d.sync.retry_count);
+    d.sync.next_retry_ms = now_ms().saturating_add(delay);
     save_note_draft(&d);
 }
 
@@ -405,17 +427,21 @@ pub(crate) fn get_due_unsynced_nav_drafts(
 
     let mut out = vec![];
     let d = load_note_draft(db_id, note_id);
+    if !d.sync.nav_content_dirty {
+        return out;
+    }
+    if !(d.sync.next_retry_ms == 0 || d.sync.next_retry_ms <= now_ms) {
+        return out;
+    }
 
     for (nav_id, b) in d.nav_state.iter() {
-        if !b.content_dirty || b.updated_ms <= b.synced_ms {
+        if !b.content_dirty {
             continue;
         }
 
-        if b.next_retry_ms == 0 || b.next_retry_ms <= now_ms {
-            out.push((nav_id.clone(), b.content.clone(), b.updated_ms));
-            if out.len() >= limit {
-                break;
-            }
+        out.push((nav_id.clone(), b.content.clone(), d.sync.updated_ms));
+        if out.len() >= limit {
+            break;
         }
     }
 
@@ -434,17 +460,19 @@ pub(crate) fn get_due_unsynced_nav_meta_drafts(
 
     let mut out = vec![];
     let d = load_note_draft(db_id, note_id);
+    if !d.sync.nav_meta_dirty {
+        return out;
+    }
+    if !(d.sync.next_retry_ms == 0 || d.sync.next_retry_ms <= now_ms) {
+        return out;
+    }
 
     for (nav_id, b) in d.nav_state.iter() {
-        if !(b.next_retry_ms == 0 || b.next_retry_ms <= now_ms) {
-            continue;
-        }
-
         let Some(meta) = b.meta.clone() else {
             continue;
         };
 
-        out.push((nav_id.clone(), meta, b.updated_ms));
+        out.push((nav_id.clone(), meta, d.sync.updated_ms));
         if out.len() >= limit {
             break;
         }
@@ -485,17 +513,10 @@ pub(crate) fn resolve_local_note_title(db_id: &str, note_id: &str, server_title:
     }
 
     let d = load_note_draft(db_id, note_id);
-    // Use draft if it has content, otherwise fallback to server title.
-    d.title
-        .and_then(|f| {
-            let v = f.value;
-            if v.trim().is_empty() {
-                None
-            } else {
-                Some(v)
-            }
-        })
-        .unwrap_or_else(|| server_title.to_string())
+    if d.sync.updated_ms > 0 {
+        return normalize_title_value(&d.title.value);
+    }
+    server_title.to_string()
 }
 
 pub(crate) fn get_unsynced_nav_drafts(db_id: &str, note_id: &str) -> Vec<(String, String, i64)> {
@@ -507,8 +528,8 @@ pub(crate) fn get_unsynced_nav_drafts(db_id: &str, note_id: &str) -> Vec<(String
     d.nav_state
         .iter()
         .filter_map(|(nav_id, b)| {
-            if b.content_dirty && b.updated_ms > b.synced_ms {
-                Some((nav_id.clone(), b.content.clone(), b.updated_ms))
+            if b.content_dirty {
+                Some((nav_id.clone(), b.content.clone(), d.sync.updated_ms))
             } else {
                 None
             }
@@ -530,7 +551,7 @@ pub(crate) fn get_pending_nav_ids(db_id: &str, note_id: &str) -> BTreeSet<String
     d.nav_state
         .iter()
         .filter_map(|(nav_id, b)| {
-            if (b.content_dirty && b.updated_ms > b.synced_ms) || b.meta.is_some() {
+            if b.content_dirty || b.meta.is_some() {
                 Some(nav_id.clone())
             } else {
                 None
@@ -573,9 +594,12 @@ mod tests {
             schema_version: NOTE_DRAFT_SCHEMA_CURRENT,
             db_id: "db".to_string(),
             note_id: "note".to_string(),
-            updated_ms: 1,
-            title: None,
+            title: default_title_draft(),
             nav_state: BTreeMap::new(),
+            sync: NoteSyncState {
+                updated_ms: 1,
+                ..Default::default()
+            },
         }
     }
 
@@ -587,13 +611,10 @@ mod tests {
             NavDraftState {
                 content: "x".to_string(),
                 meta: Some(NavMetaDraft::default()),
-                updated_ms: 10,
-                synced_ms: 10,
                 content_dirty: false,
-                retry_count: 0,
-                next_retry_ms: 0,
             },
         );
+        d.sync.nav_meta_dirty = true;
 
         assert!(!is_note_fully_synced(&d));
     }
@@ -606,11 +627,7 @@ mod tests {
             NavDraftState {
                 content: String::new(),
                 meta: Some(NavMetaDraft::default()),
-                updated_ms: 20,
-                synced_ms: 0,
                 content_dirty: false,
-                retry_count: 0,
-                next_retry_ms: 0,
             },
         );
         d.nav_state.insert(
@@ -618,17 +635,14 @@ mod tests {
             NavDraftState {
                 content: "hello".to_string(),
                 meta: None,
-                updated_ms: 30,
-                synced_ms: 0,
                 content_dirty: true,
-                retry_count: 0,
-                next_retry_ms: 0,
             },
         );
+        d.sync.updated_ms = 30;
 
         let mut out = Vec::new();
         for (id, b) in d.nav_state.iter() {
-            if b.content_dirty && b.updated_ms > b.synced_ms {
+            if b.content_dirty {
                 out.push(id.clone());
             }
         }
@@ -645,11 +659,7 @@ mod tests {
             NavDraftState {
                 content: String::new(),
                 meta: Some(NavMetaDraft::default()),
-                updated_ms: 1,
-                synced_ms: 1,
                 content_dirty: false,
-                retry_count: 0,
-                next_retry_ms: 0,
             },
         );
         d.nav_state.insert(
@@ -657,11 +667,7 @@ mod tests {
             NavDraftState {
                 content: "x".to_string(),
                 meta: None,
-                updated_ms: 2,
-                synced_ms: 0,
                 content_dirty: true,
-                retry_count: 0,
-                next_retry_ms: 0,
             },
         );
 
@@ -669,7 +675,7 @@ mod tests {
             .nav_state
             .iter()
             .filter_map(|(nav_id, b)| {
-                if (b.content_dirty && b.updated_ms > b.synced_ms) || b.meta.is_some() {
+                if b.content_dirty || b.meta.is_some() {
                     Some(nav_id.clone())
                 } else {
                     None
@@ -821,9 +827,8 @@ mod wasm_tests {
         save_note_snapshot(
             db_id,
             note_id,
-            Some("note-refresh".to_string()),
+            "note-refresh".to_string(),
             vec![nav_aa.clone(), nav_bb.clone(), nav_cc.clone()],
-            crate::util::now_ms(),
         );
         mark_navs_deleted_in_snapshot(db_id, note_id, &["bb".to_string()]);
 

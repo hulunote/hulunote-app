@@ -9,8 +9,9 @@ use crate::linking::extract_bidirectional_links;
 use crate::models::Nav;
 use crate::state::{AppContext, DbUiActions, FocusOwner};
 use crate::storage::{
-    load_recent_notes, save_recent_notes, save_user_to_storage, write_recent_db, write_recent_note,
-    CURRENT_DB_KEY, SIDEBAR_COLLAPSED_KEY,
+    load_cached_notes, load_recent_notes, save_cached_notes, save_recent_notes,
+    save_user_to_storage, write_recent_db, write_recent_note, CURRENT_DB_KEY,
+    SIDEBAR_COLLAPSED_KEY,
 };
 use crate::util::ROOT_CONTAINER_PARENT_ID;
 use leptos::ev;
@@ -779,9 +780,8 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
                     save_note_snapshot(
                         &db_id_for_create,
                         &note.id,
-                        Some(title_for_create),
+                        title_for_create,
                         vec![root_container],
-                        crate::util::now_ms(),
                     );
 
                     navigate.with_value(|nav| {
@@ -2115,6 +2115,10 @@ pub fn NotePage() -> impl IntoView {
         if !already_loaded_db && !is_loading {
             // Kick off a load with stale-response protection.
             app_state.0.notes_last_loaded_db_id.set(Some(db.clone()));
+            let cached_now = load_cached_notes(&db);
+            if !cached_now.is_empty() {
+                app_state.0.notes.set(cached_now);
+            }
 
             let req_id = app_state
                 .0
@@ -2138,7 +2142,8 @@ pub fn NotePage() -> impl IntoView {
 
                 match result {
                     Ok(notes) => {
-                        app_state.0.notes.set(notes);
+                        app_state.0.notes.set(notes.clone());
+                        save_cached_notes(&db, &notes);
                     }
                     Err(e) => {
                         if e.kind == crate::api::ApiErrorKind::Unauthorized {
@@ -2152,7 +2157,13 @@ pub fn NotePage() -> impl IntoView {
                             let offline_now = sync_sv
                                 .try_with_value(|s| !s.is_backend_online())
                                 .unwrap_or(false);
-                            if !offline_now {
+                            if offline_now {
+                                let cached = load_cached_notes(&db);
+                                if !cached.is_empty() {
+                                    app_state.0.notes.set(cached);
+                                }
+                                app_state.0.notes_error.set(None);
+                            } else {
                                 app_state.0.notes_error.set(Some(e.to_string()));
                             }
                         }
@@ -2242,9 +2253,10 @@ pub fn NotePage() -> impl IntoView {
 
         // Load draft from localStorage; use if exists.
         let draft = crate::drafts::load_note_draft(&db, &id);
-        let draft_title = draft.title.map(|f| f.value).unwrap_or_default();
+        let draft_title = draft.title.value;
+        let has_local_title_history = draft.sync.updated_ms > 0;
 
-        if !draft_title.is_empty() {
+        if has_local_title_history {
             // Use local draft (local-first priority) only when entering a note.
             // Do not continuously overwrite title while staying on the same note.
             if title_note_id.get() != id {
@@ -2272,17 +2284,14 @@ pub fn NotePage() -> impl IntoView {
             }
             write_recent_note(&db, &id, &n.title);
         } else if let Some(snap) = load_note_snapshot(&db, &id) {
-            if let Some(t) = snap.title {
-                // Initialize only when entering a note.
-                if title_note_id.get() != id {
-                    title_note_id.set(id.clone());
-                    title_value.set(t.clone());
-                    title_original.set(t.clone());
-                }
-                write_recent_note(&db, &id, &t);
-            } else {
-                write_recent_note(&db, &id, &id);
+            let t = snap.title;
+            // Initialize only when entering a note.
+            if title_note_id.get() != id {
+                title_note_id.set(id.clone());
+                title_value.set(t.clone());
+                title_original.set(t.clone());
             }
+            write_recent_note(&db, &id, &t);
         } else {
             write_recent_note(&db, &id, &id);
         }
@@ -2376,8 +2385,9 @@ pub fn NotePage() -> impl IntoView {
                     n.title = new_title.clone();
                 }
             });
+            save_cached_notes(&db, &app_state.0.notes.get_untracked());
             if let Some(snap) = load_note_snapshot(&db, &id) {
-                save_note_snapshot(&db, &id, Some(new_title), snap.navs, crate::util::now_ms());
+                save_note_snapshot(&db, &id, new_title, snap.navs);
             }
             return;
         }
@@ -2396,6 +2406,7 @@ pub fn NotePage() -> impl IntoView {
                 n.title = new_title.clone();
             }
         });
+        save_cached_notes(&db, &app_state.0.notes.get_untracked());
 
         // Route through NoteSyncController for debounce + retry + offline handling.
         let _ = sync_sv.try_with_value(|s| s.on_title_changed(&new_title));
@@ -2739,6 +2750,10 @@ pub fn DbHomePage() -> impl IntoView {
         }
 
         app_state.0.notes_last_loaded_db_id.set(Some(id.clone()));
+        let cached_now = load_cached_notes(&id);
+        if !cached_now.is_empty() {
+            app_state.0.notes.set(cached_now);
+        }
 
         let req_id = app_state
             .0
@@ -2761,7 +2776,8 @@ pub fn DbHomePage() -> impl IntoView {
 
             match result {
                 Ok(notes) => {
-                    app_state.0.notes.set(notes);
+                    app_state.0.notes.set(notes.clone());
+                    save_cached_notes(&id, &notes);
                 }
                 Err(e) => {
                     if e.kind == crate::api::ApiErrorKind::Unauthorized {
@@ -2771,8 +2787,15 @@ pub fn DbHomePage() -> impl IntoView {
                         app_state.0.current_user.set(None);
                         let _ = window().location().set_href("/login");
                     } else {
-                        app_state.0.notes_error.set(Some(e.to_string()));
-                        app_state.0.notes.set(vec![]);
+                        if e.kind == crate::api::ApiErrorKind::Network {
+                            let cached = load_cached_notes(&id);
+                            if !cached.is_empty() {
+                                app_state.0.notes.set(cached);
+                            }
+                            app_state.0.notes_error.set(None);
+                        } else {
+                            app_state.0.notes_error.set(Some(e.to_string()));
+                        }
                     }
                 }
             }

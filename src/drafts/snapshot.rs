@@ -12,28 +12,19 @@ pub(crate) const NOTE_SNAPSHOT_SCHEMA_VERSION: u32 = 20260217;
 pub(crate) struct NoteSnapshot {
     pub schema_version: u32,
 
-    pub saved_ms: i64,
     pub db_id: String,
     pub note_id: String,
-    #[serde(default)]
-    pub title: Option<String>,
+    pub title: String,
     pub navs: Vec<Nav>,
 }
 
-pub(crate) fn save_note_snapshot(
-    db_id: &str,
-    note_id: &str,
-    title: Option<String>,
-    navs: Vec<Nav>,
-    saved_ms: i64,
-) {
+pub(crate) fn save_note_snapshot(db_id: &str, note_id: &str, title: String, navs: Vec<Nav>) {
     if db_id.trim().is_empty() || note_id.trim().is_empty() {
         return;
     }
 
     let snap = NoteSnapshot {
         schema_version: NOTE_SNAPSHOT_SCHEMA_VERSION,
-        saved_ms,
         db_id: db_id.to_string(),
         note_id: note_id.to_string(),
         title,
@@ -75,7 +66,43 @@ pub(crate) fn mark_navs_deleted_in_snapshot(db_id: &str, note_id: &str, ids: &[S
     };
 
     if apply_snapshot_tombstones(&mut snap.navs, ids) {
-        save_note_snapshot(db_id, note_id, snap.title, snap.navs, snap.saved_ms);
+        save_note_snapshot(db_id, note_id, snap.title, snap.navs);
+    }
+}
+
+fn apply_snapshot_nav_content(navs: &mut [Nav], nav_id: &str, content: &str) -> bool {
+    if nav_id.trim().is_empty() {
+        return false;
+    }
+
+    let Some(nav) = navs.iter_mut().find(|n| n.id == nav_id) else {
+        return false;
+    };
+
+    if nav.content == content {
+        return false;
+    }
+
+    nav.content = content.to_string();
+    true
+}
+
+pub(crate) fn update_nav_content_in_snapshot(
+    db_id: &str,
+    note_id: &str,
+    nav_id: &str,
+    content: &str,
+) {
+    if db_id.trim().is_empty() || note_id.trim().is_empty() || nav_id.trim().is_empty() {
+        return;
+    }
+
+    let Some(mut snap) = load_note_snapshot(db_id, note_id) else {
+        return;
+    };
+
+    if apply_snapshot_nav_content(&mut snap.navs, nav_id, content) {
+        save_note_snapshot(db_id, note_id, snap.title, snap.navs);
     }
 }
 
@@ -117,5 +144,29 @@ mod tests {
         let changed = apply_snapshot_tombstones(&mut navs, &ids);
 
         assert!(!changed);
+    }
+
+    #[test]
+    fn apply_snapshot_nav_content_updates_target_only() {
+        let mut navs = vec![nav("a", false), nav("b", false)];
+        navs[0].content = "old-a".to_string();
+        navs[1].content = "old-b".to_string();
+
+        let changed = apply_snapshot_nav_content(&mut navs, "b", "new-b");
+
+        assert!(changed);
+        assert_eq!(navs[0].content, "old-a");
+        assert_eq!(navs[1].content, "new-b");
+    }
+
+    #[test]
+    fn apply_snapshot_nav_content_noop_when_missing() {
+        let mut navs = vec![nav("a", false)];
+        navs[0].content = "same".to_string();
+
+        let changed = apply_snapshot_nav_content(&mut navs, "x", "new");
+
+        assert!(!changed);
+        assert_eq!(navs[0].content, "same");
     }
 }

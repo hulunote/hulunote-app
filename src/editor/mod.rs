@@ -13,7 +13,7 @@ use crate::state::AppContext;
 #[cfg(target_arch = "wasm32")]
 use crate::state::AppState;
 use crate::state::{FocusOwner, NoteSyncController};
-use crate::storage::{load_json_from_storage, save_json_to_storage};
+use crate::storage::{load_note_cursor, save_note_cursor};
 use crate::util::ROOT_CONTAINER_PARENT_ID;
 use leptos::ev;
 use leptos::html;
@@ -21,7 +21,6 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 #[cfg(target_arch = "wasm32")]
 use leptos_router::components::Router;
-use serde::{Deserialize, Serialize};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 
@@ -54,36 +53,6 @@ struct AutocompleteCtx {
     titles_cache_db: RwSignal<Option<String>>,
     titles_cache: RwSignal<Vec<String>>,
     titles_loading: RwSignal<bool>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct NoteCursorState {
-    nav_id: String,
-    cursor_col: u32,
-}
-
-fn note_cursor_key(db_id: &str, note_id: &str) -> String {
-    format!("hulunote_note_cursor::{db_id}::{note_id}")
-}
-
-fn save_note_cursor_state(db_id: &str, note_id: &str, nav_id: &str, cursor_col: u32) {
-    if db_id.trim().is_empty() || note_id.trim().is_empty() || nav_id.trim().is_empty() {
-        return;
-    }
-    save_json_to_storage(
-        &note_cursor_key(db_id, note_id),
-        &NoteCursorState {
-            nav_id: nav_id.to_string(),
-            cursor_col,
-        },
-    );
-}
-
-fn load_note_cursor_state(db_id: &str, note_id: &str) -> Option<NoteCursorState> {
-    if db_id.trim().is_empty() || note_id.trim().is_empty() {
-        return None;
-    }
-    load_json_from_storage::<NoteCursorState>(&note_cursor_key(db_id, note_id))
 }
 
 /// Update a nav's content in the local in-memory list.
@@ -121,6 +90,7 @@ struct EditorDomSnapshot {
 
 const CARET_ANCHOR_ATTR: &str = "data-caret-anchor";
 const CARET_ANCHOR_VALUE: &str = "1";
+const CURSOR_SAVE_DEBOUNCE_MS: i32 = 300;
 
 fn ce_snapshot(el: &web_sys::HtmlElement) -> EditorDomSnapshot {
     fn push_text_atom(raw: &str, out: &mut Vec<EditorAtom>) {
@@ -175,6 +145,48 @@ fn ce_snapshot(el: &web_sys::HtmlElement) -> EditorDomSnapshot {
         atoms,
         view_text,
         persisted_text,
+    }
+}
+
+fn schedule_note_cursor_save(
+    timer_id: RwSignal<Option<i32>>,
+    db_id: &str,
+    note_id: &str,
+    nav_id: &str,
+    cursor_col: u32,
+) {
+    if db_id.trim().is_empty() || note_id.trim().is_empty() || nav_id.trim().is_empty() {
+        return;
+    }
+
+    let w = window();
+
+    if let Some(id) = timer_id.get_untracked() {
+        w.clear_timeout_with_handle(id);
+    }
+
+    let db_id = db_id.to_string();
+    let note_id = note_id.to_string();
+    let nav_id = nav_id.to_string();
+    let db_id_cb = db_id.clone();
+    let note_id_cb = note_id.clone();
+    let nav_id_cb = nav_id.clone();
+    let cb = Closure::<dyn FnMut()>::new(move || {
+        save_note_cursor(&db_id_cb, &note_id_cb, &nav_id_cb, cursor_col);
+    });
+
+    match w.set_timeout_with_callback_and_timeout_and_arguments_0(
+        cb.as_ref().unchecked_ref(),
+        CURSOR_SAVE_DEBOUNCE_MS,
+    ) {
+        Ok(id) => {
+            timer_id.set(Some(id));
+            cb.forget();
+        }
+        Err(_) => {
+            timer_id.set(None);
+            save_note_cursor(&db_id, &note_id, &nav_id, cursor_col);
+        }
     }
 }
 
@@ -767,7 +779,6 @@ pub fn test_mount_outline_editor(root: &web_sys::HtmlElement, initial_text: &str
     let snapshot_key = format!("hulunote_note_snapshot::{}::{}", "db-test", note_id);
     let snapshot_value = serde_json::json!({
         "schema_version": 20260217u32,
-        "saved_ms": 0i64,
         "db_id": "db-test",
         "note_id": note_id,
         "title": "test",
@@ -1411,6 +1422,24 @@ fn reconcile_local_nav_content(db_id: &str, note_id: &str, navs: &mut [Nav]) {
     }
 }
 
+fn apply_local_draft_overlay_and_refresh_snapshot(
+    db_id: &str,
+    note_id: &str,
+    title: String,
+    navs: &mut [Nav],
+) {
+    if db_id.trim().is_empty() || note_id.trim().is_empty() {
+        return;
+    }
+
+    // Current note view must reflect local draft first.
+    reconcile_local_nav_content(db_id, note_id, navs);
+    reconcile_local_nav_meta(db_id, note_id, navs);
+
+    // Snapshot tracks the latest local-first view for fast refresh/offline rebuild.
+    save_note_snapshot(db_id, note_id, title, navs.to_vec());
+}
+
 fn restore_editor_focus_for_note(
     navs: &[Nav],
     db_id: &str,
@@ -1429,7 +1458,7 @@ fn restore_editor_focus_for_note(
         return;
     };
 
-    let picked = load_note_cursor_state(db_id, note_id)
+    let picked = load_note_cursor(db_id, note_id)
         .and_then(|saved| {
             if visible_ids.iter().any(|id| id == &saved.nav_id) {
                 Some((saved.nav_id, saved.cursor_col))
@@ -1551,6 +1580,7 @@ pub fn OutlineEditor(
                 offline.set(true);
                 offline_missing_snapshot.set(false);
                 error.set(None);
+                let snap_title = snap.title.clone();
                 let mut xs = snap.navs;
 
                 let maybe_tmp =
@@ -1604,8 +1634,9 @@ pub fn OutlineEditor(
                     );
                 }
 
-                reconcile_local_nav_content(&db_id_now, &id, &mut xs);
-                reconcile_local_nav_meta(&db_id_now, &id, &mut xs);
+                apply_local_draft_overlay_and_refresh_snapshot(
+                    &db_id_now, &id, snap_title, &mut xs,
+                );
                 navs.set(xs);
             } else {
                 offline.set(true);
@@ -1636,7 +1667,8 @@ pub fn OutlineEditor(
                         .get_untracked()
                         .into_iter()
                         .find(|n| n.id == id)
-                        .map(|n| n.title);
+                        .map(|n| n.title)
+                        .expect("note title must exist before saving snapshot");
                     // Merge only *pending local* navs from snapshot (e.g. offline-created tmp nodes).
                     // Never re-introduce fully-synced snapshot rows that the backend no longer returns.
                     let pending_ids = get_pending_nav_ids(&db_id2, &id);
@@ -1669,9 +1701,6 @@ pub fn OutlineEditor(
                             editing_snapshot.set(Some((tmp_id.clone(), String::new())));
                             target_cursor_col.set(Some(0));
                         }
-                    } else {
-                        // Persist snapshot for normal notes.
-                        save_note_snapshot(&db_id2, &id, title, xs.clone(), crate::util::now_ms());
                     }
 
                     let suppress_by_new_note_intent = app_state
@@ -1700,8 +1729,7 @@ pub fn OutlineEditor(
                         );
                     }
 
-                    reconcile_local_nav_content(&db_id2, &id, &mut xs);
-                    reconcile_local_nav_meta(&db_id2, &id, &mut xs);
+                    apply_local_draft_overlay_and_refresh_snapshot(&db_id2, &id, title, &mut xs);
                     navs.set(xs);
                 }
                 Err(e) => {
@@ -1713,6 +1741,7 @@ pub fn OutlineEditor(
                             offline.set(true);
                             offline_missing_snapshot.set(false);
                             error.set(None);
+                            let snap_title = snap.title.clone();
                             let mut xs = snap.navs;
                             let suppress_by_new_note_intent = app_state
                                 .0
@@ -1739,8 +1768,9 @@ pub fn OutlineEditor(
                                     target_cursor_col,
                                 );
                             }
-                            reconcile_local_nav_content(&db_id2, &id, &mut xs);
-                            reconcile_local_nav_meta(&db_id2, &id, &mut xs);
+                            apply_local_draft_overlay_and_refresh_snapshot(
+                                &db_id2, &id, snap_title, &mut xs,
+                            );
                             navs.set(xs);
                         } else {
                             offline.set(true);
@@ -1988,6 +2018,7 @@ pub fn OutlineNode(
     let op_applied_in_this_turn: RwSignal<bool> = RwSignal::new(false);
     // In multiline mode, Shift+Enter can jump to first-line end and then jump back.
     let shift_enter_return_caret: RwSignal<Option<u32>> = RwSignal::new(None);
+    let cursor_save_timer_id: RwSignal<Option<i32>> = RwSignal::new(None);
 
     let nav_id_for_nav = nav_id.clone();
     let nav_id_for_toggle = nav_id.clone();
@@ -2057,6 +2088,10 @@ pub fn OutlineNode(
     });
 
     on_cleanup(move || {
+        if let Some(id) = cursor_save_timer_id.get_untracked() {
+            let w = window();
+            w.clear_timeout_with_handle(id);
+        }
         if let Some(pop) = ac_popover_ref.get_untracked() {
             let el: web_sys::Element = pop.unchecked_into();
             set_popover_open(&el, false);
@@ -2527,12 +2562,8 @@ pub fn OutlineNode(
                                     let is_editing = editing_id.get().as_deref() == Some(id.as_str());
 
                                     if !is_editing {
-                                        // When not editing, still reflect local-first drafts stored in localStorage.
-                                        // Otherwise a refresh shows stale server content until the user re-enters edit mode.
-                                        let db_id = app_state.0.current_database_id.get_untracked().unwrap_or_default();
-                                        let note_id = note_id_sv.get_value();
-                                        let id_now = nav_id_sv.get_value();
-                                        let content_now = resolve_local_nav_content(&db_id, &note_id, &id_now, &n.content);
+                                        // The note list already applied draft overlay on load; use in-memory value directly.
+                                        let content_now = n.content.clone();
                                         let content_for_click = content_now.clone();
 
                                         // Show placeholder text for empty nodes while keeping them clickable.
@@ -3248,6 +3279,13 @@ pub fn OutlineNode(
                                                 };
 
                                                 let (caret_utf16, _caret_end_utf16, _len_before) = ce_selection_utf16(&el);
+                                                schedule_note_cursor_save(
+                                                    cursor_save_timer_id,
+                                                    &db_id_sv.get_value(),
+                                                    &note_id_sv.get_value(),
+                                                    &nav_id_sv.get_value(),
+                                                    caret_utf16,
+                                                );
                                                 let handled_by_op = op_applied_in_this_turn.get_untracked();
                                                 if handled_by_op {
                                                     op_applied_in_this_turn.set(false);
@@ -3346,6 +3384,15 @@ pub fn OutlineNode(
                                                     .and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
                                                 {
                                                     let v = ce_text(&el);
+                                                    let (caret_utf16, _caret_end_utf16, _len_before) =
+                                                        ce_selection_utf16(&el);
+                                                    schedule_note_cursor_save(
+                                                        cursor_save_timer_id,
+                                                        &db_id_sv.get_value(),
+                                                        &note_id_sv.get_value(),
+                                                        &nav_id_sv.get_value(),
+                                                        caret_utf16,
+                                                    );
                                                     editing_value.set(v.clone());
                                                     let nav_id = nav_id_sv.get_value();
                                                     let _ = sync_sv.try_with_value(|s| {
@@ -3361,6 +3408,7 @@ pub fn OutlineNode(
                                             // on:blur only persists content; it does NOT decide whether we should exit
                                             // editing mode (that decision belongs to focusout/relatedTarget).
                                             on:blur={
+                                                let db_id_fallback = db_id_sv.get_value();
                                                 let nav_id_fallback = nav_id_sv.get_value();
                                                 let note_id_fallback = note_id_sv.get_value();
                                                 move |ev| {
@@ -3418,23 +3466,12 @@ pub fn OutlineNode(
                                                     // Persist caret so window/tab switches can restore exact position.
                                                     let (caret_col, _caret_end, _len_before) = ce_selection_utf16(&el);
                                                     target_cursor_col.set(Some(caret_col));
-                                                    let db_id_now = app_state
-                                                        .0
-                                                        .current_database_id
-                                                        .get_untracked()
-                                                        .unwrap_or_default();
-                                                    save_note_cursor_state(
-                                                        &db_id_now,
+                                                    save_note_cursor(
+                                                        &db_id_fallback,
                                                         &note_id_now,
                                                         &nav_id_now,
                                                         caret_col,
                                                     );
-
-                                                    // Ignore stale blur from a node that is no longer active editor.
-                                                    // Otherwise old DOM text may overwrite newer split/update results.
-                                                    if editing_id.get_untracked().as_deref() != Some(nav_id_now.as_str()) {
-                                                        return;
-                                                    }
 
                                                     // MVP: always persist on blur.
                                                     navs.update(|xs| {
@@ -3444,12 +3481,49 @@ pub fn OutlineNode(
                                                     // Always persist to local draft. Network sync is handled
                                                     // by the global NoteSyncController (debounce + retry + offline backoff).
                                                     let sync_sv = sync_sv;
+                                                    let db_id_now2 = db_id_fallback.clone();
+                                                    let note_id_now2 = note_id_now.clone();
                                                     let nav_id_now2 = nav_id_now.clone();
                                                     let new_content2 = new_content.clone();
                                                     let _ = sync_sv.try_with_value(|s| {
-                                                        s.on_nav_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &nav_id_now2, &new_content2);
+                                                        s.on_nav_changed_for_scope(&db_id_now2, &note_id_now2, &nav_id_now2, &new_content2);
                                                     });
                                                 }
+                                            }
+                                            on:keyup=move |ev: web_sys::KeyboardEvent| {
+                                                if is_composing.get_untracked() {
+                                                    return;
+                                                }
+                                                let Some(el) = ev
+                                                    .current_target()
+                                                    .and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
+                                                else {
+                                                    return;
+                                                };
+                                                let (caret_utf16, _caret_end_utf16, _len_before) = ce_selection_utf16(&el);
+                                                schedule_note_cursor_save(
+                                                    cursor_save_timer_id,
+                                                    &db_id_sv.get_value(),
+                                                    &note_id_sv.get_value(),
+                                                    &nav_id_sv.get_value(),
+                                                    caret_utf16,
+                                                );
+                                            }
+                                            on:mouseup=move |ev: web_sys::MouseEvent| {
+                                                let Some(el) = ev
+                                                    .current_target()
+                                                    .and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
+                                                else {
+                                                    return;
+                                                };
+                                                let (caret_utf16, _caret_end_utf16, _len_before) = ce_selection_utf16(&el);
+                                                schedule_note_cursor_save(
+                                                    cursor_save_timer_id,
+                                                    &db_id_sv.get_value(),
+                                                    &note_id_sv.get_value(),
+                                                    &nav_id_sv.get_value(),
+                                                    caret_utf16,
+                                                );
                                             }
                                             on:focusout=move |ev: web_sys::FocusEvent| {
                                                 if !should_exit_edit_on_focusout_related_target(
@@ -4429,13 +4503,13 @@ pub fn OutlineNode(
                                                         .get_untracked()
                                                         .into_iter()
                                                         .find(|n| n.id == note_id_now)
-                                                        .map(|n| n.title);
+                                                        .map(|n| n.title)
+                                                        .expect("note title must exist before saving snapshot");
                                                     save_note_snapshot(
                                                         &db_id_now,
                                                         &note_id_now,
                                                         title,
                                                         navs.get_untracked(),
-                                                        crate::util::now_ms(),
                                                     );
                                                 }
                                             }

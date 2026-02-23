@@ -1,6 +1,7 @@
-use crate::models::{AccountInfo, RecentDb, RecentNote};
+use crate::models::{AccountInfo, Note, RecentDb, RecentNote};
 use crate::util::now_ms;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub(crate) const TOKEN_KEY: &str = "hulunote_token";
 pub(crate) const USER_KEY: &str = "hulunote_user";
@@ -10,6 +11,27 @@ pub(crate) const CURRENT_DB_KEY: &str = "hulunote_current_database_id";
 // Phase 5.5: local recents
 pub(crate) const RECENT_DBS_KEY: &str = "hulunote_recent_dbs";
 pub(crate) const RECENT_NOTES_KEY: &str = "hulunote_recent_notes";
+pub(crate) const NOTES_CACHE_PREFIX: &str = "hulunote_notes_cache::";
+pub(crate) const NOTE_CURSORS_KEY: &str = "hulunote_note_cursors";
+
+fn notes_cache_key(db_id: &str) -> String {
+    format!("{NOTES_CACHE_PREFIX}{db_id}")
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct CachedNoteListItem {
+    id: String,
+    database_id: String,
+    title: String,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct NoteCursorState {
+    pub nav_id: String,
+    pub cursor_col: u32,
+}
 
 pub(crate) fn save_user_to_storage(user: &AccountInfo) {
     if let Ok(json) = serde_json::to_string(user) {
@@ -111,6 +133,70 @@ pub(crate) fn write_recent_note(db_id: &str, note_id: &str, title: &str) {
         20,
     );
     save_json_to_storage(RECENT_NOTES_KEY, &next);
+}
+
+pub(crate) fn load_cached_notes(db_id: &str) -> Vec<Note> {
+    if db_id.trim().is_empty() {
+        return vec![];
+    }
+    load_json_from_storage::<Vec<CachedNoteListItem>>(&notes_cache_key(db_id))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|n| Note {
+            id: n.id,
+            database_id: n.database_id,
+            title: n.title,
+            content: String::new(),
+            created_at: n.created_at,
+            updated_at: n.updated_at,
+        })
+        .collect()
+}
+
+pub(crate) fn save_cached_notes(db_id: &str, notes: &[Note]) {
+    if db_id.trim().is_empty() {
+        return;
+    }
+    let cached: Vec<CachedNoteListItem> = notes
+        .iter()
+        .map(|n| CachedNoteListItem {
+            id: n.id.clone(),
+            database_id: n.database_id.clone(),
+            title: n.title.clone(),
+            created_at: n.created_at.clone(),
+            updated_at: n.updated_at.clone(),
+        })
+        .collect();
+    save_json_to_storage(&notes_cache_key(db_id), &cached);
+}
+
+fn note_cursor_map_key(db_id: &str, note_id: &str) -> String {
+    format!("{db_id}::{note_id}")
+}
+
+pub(crate) fn load_note_cursor(db_id: &str, note_id: &str) -> Option<NoteCursorState> {
+    if db_id.trim().is_empty() || note_id.trim().is_empty() {
+        return None;
+    }
+    let map = load_json_from_storage::<BTreeMap<String, NoteCursorState>>(NOTE_CURSORS_KEY)
+        .unwrap_or_default();
+    map.get(&note_cursor_map_key(db_id, note_id)).cloned()
+}
+
+pub(crate) fn save_note_cursor(db_id: &str, note_id: &str, nav_id: &str, cursor_col: u32) {
+    if db_id.trim().is_empty() || note_id.trim().is_empty() || nav_id.trim().is_empty() {
+        return;
+    }
+    let mut map = load_json_from_storage::<BTreeMap<String, NoteCursorState>>(NOTE_CURSORS_KEY)
+        .unwrap_or_default();
+    map.insert(
+        note_cursor_map_key(db_id, note_id),
+        NoteCursorState {
+            nav_id: nav_id.to_string(),
+            cursor_col,
+        },
+    );
+    save_json_to_storage(NOTE_CURSORS_KEY, &map);
 }
 
 #[cfg(all(test, target_arch = "wasm32"))]

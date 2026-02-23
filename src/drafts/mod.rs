@@ -10,3 +10,13 @@ pub(crate) use note::{
 };
 
 pub(crate) use snapshot::{load_note_snapshot, mark_navs_deleted_in_snapshot, save_note_snapshot};
+
+pub(crate) fn touch_nav_content_local_first(
+    db_id: &str,
+    note_id: &str,
+    nav_id: &str,
+    content: &str,
+) {
+    note::touch_nav(db_id, note_id, nav_id, content);
+    snapshot::update_nav_content_in_snapshot(db_id, note_id, nav_id, content);
+}

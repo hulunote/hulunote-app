@@ -9,5 +9,7 @@ open = false
 
 [watch]
 features = []
+# Paths to watch. The `build.target`'s parent folder is watched by default.
+watch = ["src"]
 
 # Tailwind is configured via index.html <link data-trunk rel="tailwind-css" ...>
