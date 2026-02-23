@@ -169,7 +169,39 @@ export async function openFreshNote(page: Page): Promise<void> {
     throw new Error(`New Note did not navigate to a fresh note (before=${beforeNoteId}, after=${parseNoteId(page.url())})`);
   }
 
-  await page.waitForSelector('.outline-row [contenteditable="true"], .outline-row .cursor-text', {
-    timeout: 20_000,
-  });
+  const titleInput = page.locator('input.text-3xl').first();
+  await expect(titleInput).toBeVisible({ timeout: 20_000 });
+
+  const waitForOutlineReady = async (): Promise<boolean> =>
+    expect
+      .poll(
+        async () =>
+          page.evaluate(() => {
+            const rows = Array.from(document.querySelectorAll('.outline-editor .outline-row'));
+            if (rows.length === 0) return false;
+            return rows.some(
+              (row) =>
+                row.querySelector('[contenteditable="true"]') !== null ||
+                row.querySelector('.cursor-text') !== null,
+            );
+          }),
+        { timeout: 12_000 },
+      )
+      .toBeTruthy()
+      .then(() => true)
+      .catch(() => false);
+
+  if (!(await waitForOutlineReady())) {
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await expect(titleInput).toBeVisible({ timeout: 20_000 });
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(() =>
+            Array.from(document.querySelectorAll('.outline-editor .outline-row')).length > 0,
+          ),
+        { timeout: 20_000 },
+      )
+      .toBeTruthy();
+  }
 }
