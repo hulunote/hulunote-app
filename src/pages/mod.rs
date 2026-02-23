@@ -2,7 +2,6 @@ use crate::components::ui::{
     Alert, AlertDescription, Button, ButtonSize, ButtonVariant, Card, CardContent, CardDescription,
     CardHeader, CardTitle, Input, Label, Spinner,
 };
-use crate::drafts::resolve_local_note_title;
 use crate::drafts::{load_note_snapshot, save_note_snapshot};
 use crate::editor::OutlineEditor;
 use crate::linking::extract_bidirectional_links;
@@ -1230,8 +1229,7 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
                                                             let db_id = n.db_id.clone();
                                                             let db_id_href = db_id.clone();
                                                             let note_id = n.note_id.clone();
-                                                            // Use local draft if available (local-first).
-                                                            let title = resolve_local_note_title(&db_id, &note_id, &n.title);
+                                                            let title = n.title.clone();
 
                                                             let db_name_opt = dbs
                                                                 .iter()
@@ -1515,8 +1513,7 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
                                                                 }
                                                             };
 
-                                                            // Use title override to match note title behavior
-                                                            let display_title = resolve_local_note_title(&db_id_for_list, &id_for_href, &n.title);
+                                                            let display_title = n.title.clone();
                                                             view! {
                                                                 <div class=row_class>
                                                                     <a
@@ -2055,7 +2052,6 @@ pub fn NotePage() -> impl IntoView {
     let error: RwSignal<Option<String>> = RwSignal::new(None);
 
     // Title server sync: idle debounce timer handle.
-    let title_debounce_timer_id: RwSignal<Option<i32>> = RwSignal::new(None);
 
     // Phase 7: backlinks (MVP)
     let all_db_navs: RwSignal<Vec<Nav>> = RwSignal::new(vec![]);
@@ -2251,30 +2247,7 @@ pub fn NotePage() -> impl IntoView {
             return;
         }
 
-        // Load draft from localStorage; use if exists.
-        let draft = crate::drafts::load_note_draft(&db, &id);
-        let draft_title = draft.title.value;
-        let has_local_title_history = draft.sync.updated_ms > 0;
-
-        if has_local_title_history {
-            // Use local draft (local-first priority) only when entering a note.
-            // Do not continuously overwrite title while staying on the same note.
-            if title_note_id.get() != id {
-                title_note_id.set(id.clone());
-                // Clear any pending debounce.
-                if let Some(win) = web_sys::window() {
-                    if let Some(tid) = title_debounce_timer_id.get_untracked() {
-                        win.clear_timeout_with_handle(tid);
-                    }
-                }
-                title_debounce_timer_id.set(None);
-                title_value.set(draft_title.clone());
-                title_original.set(draft_title);
-            }
-            return;
-        }
-
-        // No local draft - use note from backend.
+        // Initialize note title from notes/snapshot only.
         if let Some(n) = app_state.0.notes.get().into_iter().find(|n| n.id == id) {
             // Initialize only when entering a note.
             if title_note_id.get() != id {
@@ -3086,8 +3059,7 @@ pub fn DbHomePage() -> impl IntoView {
                                                 .get()
                                                 .into_iter()
                                                 .map(|n| {
-                                                    // Use title override to match note title behavior (local-first).
-                                                    let display_title = resolve_local_note_title(&db, &n.id, &n.title);
+                                                    let display_title = n.title.clone();
                                                     view! {
                                                         <a
                                                             href=format!("/db/{}/note/{}", db, n.id)

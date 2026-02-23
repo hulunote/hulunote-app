@@ -2,7 +2,7 @@
 use crate::api::CreateOrUpdateNavRequest;
 use crate::components::hooks::use_random::use_random_id_for;
 use crate::components::ui::{Command, CommandItem, CommandList, Spinner};
-use crate::drafts::{get_pending_nav_ids, reconcile_local_nav_meta, resolve_local_nav_content};
+use crate::drafts::{get_pending_nav_ids, load_note_draft, reconcile_local_nav_meta};
 use crate::drafts::{load_note_snapshot, save_note_snapshot};
 use crate::linking::{
     extract_bidirectional_links, normalize_outline_page_title, parse_bidirectional_tokens,
@@ -1417,8 +1417,16 @@ fn reconcile_local_nav_content(db_id: &str, note_id: &str, navs: &mut [Nav]) {
         return;
     }
 
+    let draft = load_note_draft(db_id, note_id);
     for n in navs.iter_mut() {
-        n.content = resolve_local_nav_content(db_id, note_id, &n.id, &n.content);
+        if let Some(local) = draft
+            .nav_state
+            .get(&n.id)
+            .filter(|state| state.content_dirty)
+            .map(|state| state.content.clone())
+        {
+            n.content = local;
+        }
     }
 }
 
@@ -2644,9 +2652,15 @@ pub fn OutlineNode(
 
                                                     let db_id = app_state.0.current_database_id.get_untracked().unwrap_or_default();
                                                     let note_id = note_id_sv.get_value();
+                                                    let draft = load_note_draft(&db_id, &note_id);
 
                                                     let cb = Closure::<dyn FnMut()>::new(move || {
-                                                        let restored = resolve_local_nav_content(&db_id, &note_id, &id, &next_value);
+                                                        let restored = draft
+                                                            .nav_state
+                                                            .get(&id)
+                                                            .filter(|state| state.content_dirty)
+                                                            .map(|state| state.content.clone())
+                                                            .unwrap_or_else(|| next_value.clone());
 
                                                         editing_id.set(Some(id.clone()));
                                                         editing_value.set(restored.clone());
@@ -3473,21 +3487,31 @@ pub fn OutlineNode(
                                                         caret_col,
                                                     );
 
-                                                    // MVP: always persist on blur.
+                                                    let should_save = editing_snapshot
+                                                        .get_untracked()
+                                                        .filter(|(id, _)| id == &nav_id_now)
+                                                        .map(|(_id, original)| original != new_content)
+                                                        .unwrap_or_else(|| {
+                                                            get_nav_content(&navs.get_untracked(), &nav_id_now)
+                                                                .unwrap_or_default()
+                                                                != new_content
+                                                        });
+
                                                     navs.update(|xs| {
                                                         let _ = apply_nav_content(xs, &nav_id_now, &new_content);
                                                     });
 
-                                                    // Always persist to local draft. Network sync is handled
-                                                    // by the global NoteSyncController (debounce + retry + offline backoff).
-                                                    let sync_sv = sync_sv;
-                                                    let db_id_now2 = db_id_fallback.clone();
-                                                    let note_id_now2 = note_id_now.clone();
-                                                    let nav_id_now2 = nav_id_now.clone();
-                                                    let new_content2 = new_content.clone();
-                                                    let _ = sync_sv.try_with_value(|s| {
-                                                        s.on_nav_changed_for_scope(&db_id_now2, &note_id_now2, &nav_id_now2, &new_content2);
-                                                    });
+                                                    // Persist to local draft only when content actually changed.
+                                                    if should_save {
+                                                        let sync_sv = sync_sv;
+                                                        let db_id_now2 = db_id_fallback.clone();
+                                                        let note_id_now2 = note_id_now.clone();
+                                                        let nav_id_now2 = nav_id_now.clone();
+                                                        let new_content2 = new_content.clone();
+                                                        let _ = sync_sv.try_with_value(|s| {
+                                                            s.on_nav_changed_for_scope(&db_id_now2, &note_id_now2, &nav_id_now2, &new_content2);
+                                                        });
+                                                    }
                                                 }
                                             }
                                             on:keyup=move |ev: web_sys::KeyboardEvent| {
@@ -4666,7 +4690,7 @@ pub fn OutlineNode(
 }
 
 #[cfg(test)]
-mod editor_delete_behavior_tests {
+mod tests {
     use super::*;
 
     #[test]

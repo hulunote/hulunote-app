@@ -56,6 +56,26 @@ pub(crate) struct NoteSyncController {
 }
 
 impl NoteSyncController {
+    fn resolve_note_title_for_draft(&self, db_id: &str, note_id: &str) -> Option<String> {
+        if db_id.trim().is_empty() || note_id.trim().is_empty() {
+            return None;
+        }
+
+        let from_notes = self
+            .app_state
+            .0
+            .notes
+            .get_untracked()
+            .into_iter()
+            .find(|n| n.id == note_id)
+            .map(|n| n.title);
+        let from_snapshot = crate::drafts::load_note_snapshot(db_id, note_id).map(|s| s.title);
+
+        from_notes
+            .or(from_snapshot)
+            .filter(|title| !title.trim().is_empty())
+    }
+
     pub fn is_backend_online(&self) -> bool {
         self.backend_online.get_untracked()
     }
@@ -171,13 +191,21 @@ impl NoteSyncController {
     ) -> Option<String> {
         let root_container_parent_id = crate::util::ROOT_CONTAINER_PARENT_ID;
 
-        // Root container node is identified by `parid == ROOT_CONTAINER_PARENT_ID`.
-        let root_container_id = navs
+        // ROOT node is guaranteed by business model.
+        // Root is identified structurally: parent is ROOT_CONTAINER_PARENT_ID.
+        let root_candidates: Vec<&crate::models::Nav> = navs
             .iter()
-            .find(|n| n.parid == root_container_parent_id)
-            .map(|n| n.id.clone())
-            // Fallback: keep prior behavior (best-effort local seed even if root is missing).
-            .unwrap_or_else(|| root_container_parent_id.to_string());
+            .filter(|n| n.parid == root_container_parent_id && !n.is_delete)
+            .collect();
+        let root_container_id = match root_candidates.as_slice() {
+            [root] => root.id.clone(),
+            [] => panic!("note structure invalid: missing ROOT node for note_id={}", note_id),
+            _ => panic!(
+                "note structure invalid: multiple ROOT nodes for note_id={} count={}",
+                note_id,
+                root_candidates.len()
+            ),
+        };
 
         let has_any_child = navs
             .iter()
@@ -203,13 +231,13 @@ impl NoteSyncController {
         navs.push(nav.clone());
 
         // Persist snapshot so refresh won't drop it.
-        crate::drafts::save_note_snapshot(db_id, note_id, note_title, navs.clone());
+        crate::drafts::save_note_snapshot(db_id, note_id, note_title.clone(), navs.clone());
 
         // Persist drafts so sync worker can create it on backend when online.
         if !initial_content.is_empty() {
-            crate::drafts::touch_nav(db_id, note_id, &nav_id, initial_content);
+            crate::drafts::touch_nav(db_id, note_id, &note_title, &nav_id, initial_content);
         }
-        crate::drafts::touch_nav_meta(db_id, note_id, &nav);
+        crate::drafts::touch_nav_meta(db_id, note_id, &note_title, &nav);
 
         Some(nav_id)
     }
@@ -236,7 +264,17 @@ impl NoteSyncController {
             return;
         }
 
-        touch_nav_content_local_first(db_id, note_id, nav_id, content);
+        let Some(note_title) = self.resolve_note_title_for_draft(db_id, note_id) else {
+            leptos::logging::log!(
+                "[sync:nav] skip local draft write due to missing title db_id={} note_id={} nav_id={}",
+                db_id,
+                note_id,
+                nav_id
+            );
+            return;
+        };
+
+        touch_nav_content_local_first(db_id, note_id, &note_title, nav_id, content);
         self.schedule_autosave(format!("nav:{db_id}:{note_id}:{nav_id}"));
     }
 
@@ -251,7 +289,17 @@ impl NoteSyncController {
             return;
         }
 
-        touch_nav_meta(db_id, note_id, nav);
+        let Some(note_title) = self.resolve_note_title_for_draft(db_id, note_id) else {
+            leptos::logging::log!(
+                "[sync:meta] skip local draft write due to missing title db_id={} note_id={} nav_id={}",
+                db_id,
+                note_id,
+                nav.id
+            );
+            return;
+        };
+
+        touch_nav_meta(db_id, note_id, &note_title, nav);
         self.schedule_autosave(format!("meta:{db_id}:{note_id}:{}", nav.id));
     }
 
@@ -303,7 +351,10 @@ impl NoteSyncController {
             // Flush title - read from note draft's title field.
             let draft = crate::drafts::load_note_draft(&db_id, &note_id_for_title);
             let title = draft.title;
-            if draft.sync.updated_ms <= draft.sync.synced_ms || !draft.sync.title_dirty {
+            if draft.sync.updated_ms <= draft.sync.synced_ms {
+                return;
+            }
+            if title.trim().is_empty() {
                 return;
             }
 
@@ -311,10 +362,7 @@ impl NoteSyncController {
             let db_id_clone = db_id.clone();
             let note_id_clone = note_id_for_title.to_string();
             spawn_local(async move {
-                match api_client
-                    .update_note_title(&note_id_clone, &title.value)
-                    .await
-                {
+                match api_client.update_note_title(&note_id_clone, &title).await {
                     Ok(_) => {
                         mark_title_synced(&db_id_clone, &note_id_clone, draft.sync.updated_ms);
                     }
@@ -323,7 +371,7 @@ impl NoteSyncController {
                             "[sync:title] flush failed db_id={} note_id={} title_len={} err={}",
                             db_id_clone,
                             note_id_clone,
-                            title.value.len(),
+                            title.len(),
                             e
                         );
                         mark_title_sync_failed(&db_id_clone, &note_id_clone);
@@ -485,14 +533,14 @@ impl NoteSyncController {
             let draft = crate::drafts::load_note_draft(&db_id, &note_id);
             if picked_title.is_empty() {
                 let title = draft.title;
-                if draft.sync.title_dirty
-                    && draft.sync.updated_ms > draft.sync.synced_ms
-                    && draft.sync.next_retry_ms <= now
-                {
+                if draft.sync.updated_ms > draft.sync.synced_ms && draft.sync.next_retry_ms <= now {
+                    if title.trim().is_empty() {
+                        continue;
+                    }
                     picked_title.push((
                         db_id.clone(),
                         note_id.clone(),
-                        title.value.clone(),
+                        title.clone(),
                         draft.sync.updated_ms,
                     ));
                 }
@@ -682,11 +730,11 @@ impl NoteSyncController {
         // Flush title draft.
         let draft = crate::drafts::load_note_draft(&db_id, &note_id);
         let title = draft.title;
-        if draft.sync.title_dirty && draft.sync.updated_ms > draft.sync.synced_ms {
+        if draft.sync.updated_ms > draft.sync.synced_ms && !title.trim().is_empty() {
             let api_client = self.app_state.0.api_client.get_untracked();
             let db_id_clone = db_id.clone();
             let note_id_clone = note_id.clone();
-            let title_value = title.value.clone();
+            let title_value = title.clone();
             let updated_ms = draft.sync.updated_ms;
             spawn_local(async move {
                 match api_client

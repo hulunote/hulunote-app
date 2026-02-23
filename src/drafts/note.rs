@@ -5,42 +5,19 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub(crate) struct FieldDraft {
-    pub value: String,
-}
-
-fn normalize_title_value(title: &str) -> String {
-    let t = title.trim();
-    if t.is_empty() {
-        "Untitled".to_string()
-    } else {
-        title.to_string()
-    }
-}
-
-fn default_title_draft() -> FieldDraft {
-    FieldDraft {
-        value: "Untitled".to_string(),
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub(crate) struct NavMetaDraft {
     pub parid: String,
     pub same_deep_order: f32,
     pub is_display: bool,
     pub is_delete: bool,
-    #[serde(default)]
     pub properties: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub(crate) struct NavDraftState {
     pub content: String,
-    #[serde(default)]
     pub meta: Option<NavMetaDraft>,
     /// Whether content channel has unsynced local edits.
-    #[serde(default)]
     pub content_dirty: bool,
 }
 
@@ -48,16 +25,8 @@ pub(crate) struct NavDraftState {
 pub(crate) struct NoteSyncState {
     pub updated_ms: i64,
     pub synced_ms: i64,
-    #[serde(default)]
     pub retry_count: u32,
-    #[serde(default)]
     pub next_retry_ms: i64,
-    #[serde(default)]
-    pub title_dirty: bool,
-    #[serde(default)]
-    pub nav_content_dirty: bool,
-    #[serde(default)]
-    pub nav_meta_dirty: bool,
 }
 
 pub(crate) const NOTE_DRAFT_SCHEMA_20260217: u32 = 20260217;
@@ -69,13 +38,10 @@ pub(crate) struct NoteDraft {
 
     pub db_id: String,
     pub note_id: String,
-    #[serde(default = "default_title_draft")]
-    pub title: FieldDraft,
+    pub title: String,
 
     /// nav_id -> atomic draft state (content + metadata + sync state)
-    #[serde(default)]
     pub nav_state: BTreeMap<String, NavDraftState>,
-    #[serde(default)]
     pub sync: NoteSyncState,
 }
 
@@ -85,7 +51,7 @@ impl Default for NoteDraft {
             schema_version: NOTE_DRAFT_SCHEMA_CURRENT,
             db_id: String::new(),
             note_id: String::new(),
-            title: default_title_draft(),
+            title: String::new(),
             nav_state: BTreeMap::new(),
             sync: NoteSyncState::default(),
         }
@@ -103,7 +69,6 @@ fn index_key() -> &'static str {
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 struct DraftIndex {
     /// Set of dirty note keys: "{db_id}::{note_id}".
-    #[serde(default)]
     notes: BTreeSet<String>,
 }
 
@@ -120,20 +85,12 @@ fn index_save(ix: &DraftIndex) {
 }
 
 fn index_touch_note(db_id: &str, note_id: &str) {
-    if db_id.trim().is_empty() || note_id.trim().is_empty() {
-        return;
-    }
-
     let mut ix = index_load();
     ix.notes.insert(note_index_key(db_id, note_id));
     index_save(&ix);
 }
 
 fn index_remove_note(db_id: &str, note_id: &str) {
-    if db_id.trim().is_empty() || note_id.trim().is_empty() {
-        return;
-    }
-
     let mut ix = index_load();
     ix.notes.remove(&note_index_key(db_id, note_id));
     index_save(&ix);
@@ -141,14 +98,9 @@ fn index_remove_note(db_id: &str, note_id: &str) {
 
 fn is_note_fully_synced(d: &NoteDraft) -> bool {
     d.sync.updated_ms <= d.sync.synced_ms
-        && !d.sync.title_dirty
-        && !d.sync.nav_content_dirty
-        && !d.sync.nav_meta_dirty
-}
-
-fn refresh_channel_dirty_flags(d: &mut NoteDraft) {
-    d.sync.nav_content_dirty = d.nav_state.values().any(|b| b.content_dirty);
-    d.sync.nav_meta_dirty = d.nav_state.values().any(|b| b.meta.is_some());
+        && d.nav_state
+            .values()
+            .all(|b| !b.content_dirty && b.meta.is_none())
 }
 
 fn mark_note_dirty_now(d: &mut NoteDraft, now: i64) {
@@ -209,14 +161,8 @@ pub(crate) fn list_dirty_notes(limit: usize) -> Vec<(String, String)> {
 
 fn normalize_note_draft_identity(mut d: NoteDraft, db_id: &str, note_id: &str) -> NoteDraft {
     d.schema_version = NOTE_DRAFT_SCHEMA_CURRENT;
-    if d.db_id.trim().is_empty() {
-        d.db_id = db_id.to_string();
-    }
-    if d.note_id.trim().is_empty() {
-        d.note_id = note_id.to_string();
-    }
-    d.title.value = normalize_title_value(&d.title.value);
-    refresh_channel_dirty_flags(&mut d);
+    d.db_id = db_id.to_string();
+    d.note_id = note_id.to_string();
     d
 }
 
@@ -235,10 +181,6 @@ fn upgrade_note_draft_schema(d: NoteDraft, db_id: &str, note_id: &str) -> NoteDr
 }
 
 pub(crate) fn load_note_draft(db_id: &str, note_id: &str) -> NoteDraft {
-    if db_id.trim().is_empty() || note_id.trim().is_empty() {
-        return NoteDraft::default();
-    }
-
     let d =
         load_json_from_storage::<NoteDraft>(&key(db_id, note_id)).unwrap_or_else(|| NoteDraft {
             db_id: db_id.to_string(),
@@ -250,62 +192,51 @@ pub(crate) fn load_note_draft(db_id: &str, note_id: &str) -> NoteDraft {
 }
 
 fn save_note_draft(d: &NoteDraft) {
-    if d.db_id.trim().is_empty() || d.note_id.trim().is_empty() {
-        return;
-    }
     let mut out = d.clone();
     out.schema_version = NOTE_DRAFT_SCHEMA_CURRENT;
     save_json_to_storage(&key(&out.db_id, &out.note_id), &out);
 }
 
 pub(crate) fn touch_title(db_id: &str, note_id: &str, title: &str) {
-    if db_id.trim().is_empty() || note_id.trim().is_empty() {
-        return;
-    }
-
     index_touch_note(db_id, note_id);
 
     let mut d = load_note_draft(db_id, note_id);
     let now = now_ms();
 
-    let mut f = d.title;
-    f.value = normalize_title_value(title);
-    d.title = f;
-    d.sync.title_dirty = true;
+    d.title = title.to_string();
     mark_note_dirty_now(&mut d, now);
 
     save_note_draft(&d);
 }
 
-pub(crate) fn touch_nav(db_id: &str, note_id: &str, nav_id: &str, content: &str) {
-    if db_id.trim().is_empty() || note_id.trim().is_empty() || nav_id.trim().is_empty() {
-        return;
+fn seed_title_if_missing(d: &mut NoteDraft, note_title: &str) {
+    if d.title.trim().is_empty() && !note_title.trim().is_empty() {
+        d.title = note_title.to_string();
     }
+}
 
+pub(crate) fn touch_nav(db_id: &str, note_id: &str, note_title: &str, nav_id: &str, content: &str) {
     index_touch_note(db_id, note_id);
 
     let mut d = load_note_draft(db_id, note_id);
     let now = now_ms();
+    seed_title_if_missing(&mut d, note_title);
 
     let b = d.nav_state.entry(nav_id.to_string()).or_default();
     b.content = content.to_string();
     b.content_dirty = true;
 
-    d.sync.nav_content_dirty = true;
     mark_note_dirty_now(&mut d, now);
 
     save_note_draft(&d);
 }
 
-pub(crate) fn touch_nav_meta(db_id: &str, note_id: &str, nav: &Nav) {
-    if db_id.trim().is_empty() || note_id.trim().is_empty() || nav.id.trim().is_empty() {
-        return;
-    }
-
+pub(crate) fn touch_nav_meta(db_id: &str, note_id: &str, note_title: &str, nav: &Nav) {
     index_touch_note(db_id, note_id);
 
     let mut d = load_note_draft(db_id, note_id);
     let now = now_ms();
+    seed_title_if_missing(&mut d, note_title);
 
     let meta = NavMetaDraft {
         parid: nav.parid.clone(),
@@ -317,32 +248,21 @@ pub(crate) fn touch_nav_meta(db_id: &str, note_id: &str, nav: &Nav) {
 
     let b = d.nav_state.entry(nav.id.clone()).or_default();
     b.meta = Some(meta);
-    d.sync.nav_meta_dirty = true;
     mark_note_dirty_now(&mut d, now);
     save_note_draft(&d);
 }
 
 pub(crate) fn mark_title_synced(db_id: &str, note_id: &str, synced_ms: i64) {
-    if db_id.trim().is_empty() || note_id.trim().is_empty() {
-        return;
-    }
-
     let mut d = load_note_draft(db_id, note_id);
-    d.sync.title_dirty = false;
     d.sync.synced_ms = d.sync.synced_ms.max(synced_ms);
     d.sync.retry_count = 0;
     d.sync.next_retry_ms = 0;
-    refresh_channel_dirty_flags(&mut d);
     save_note_draft(&d);
 
     index_prune_if_synced(db_id, note_id);
 }
 
 pub(crate) fn mark_title_sync_failed(db_id: &str, note_id: &str) {
-    if db_id.trim().is_empty() || note_id.trim().is_empty() {
-        return;
-    }
-
     index_touch_note(db_id, note_id);
 
     let mut d = load_note_draft(db_id, note_id);
@@ -353,27 +273,18 @@ pub(crate) fn mark_title_sync_failed(db_id: &str, note_id: &str) {
 }
 
 pub(crate) fn mark_nav_synced(db_id: &str, note_id: &str, nav_id: &str, synced_ms: i64) {
-    if db_id.trim().is_empty() || note_id.trim().is_empty() || nav_id.trim().is_empty() {
-        return;
-    }
-
     let mut d = load_note_draft(db_id, note_id);
     let b = d.nav_state.entry(nav_id.to_string()).or_default();
     b.content_dirty = false;
     d.sync.synced_ms = d.sync.synced_ms.max(synced_ms);
     d.sync.retry_count = 0;
     d.sync.next_retry_ms = 0;
-    refresh_channel_dirty_flags(&mut d);
     save_note_draft(&d);
 
     index_prune_if_synced(db_id, note_id);
 }
 
 pub(crate) fn mark_nav_meta_synced(db_id: &str, note_id: &str, nav_id: &str, synced_ms: i64) {
-    if db_id.trim().is_empty() || note_id.trim().is_empty() || nav_id.trim().is_empty() {
-        return;
-    }
-
     let mut d = load_note_draft(db_id, note_id);
     let b = d.nav_state.entry(nav_id.to_string()).or_default();
 
@@ -383,7 +294,6 @@ pub(crate) fn mark_nav_meta_synced(db_id: &str, note_id: &str, nav_id: &str, syn
     d.sync.synced_ms = d.sync.synced_ms.max(synced_ms);
     d.sync.retry_count = 0;
     d.sync.next_retry_ms = 0;
-    refresh_channel_dirty_flags(&mut d);
     save_note_draft(&d);
 
     index_prune_if_synced(db_id, note_id);
@@ -397,10 +307,6 @@ fn compute_retry_delay_ms(retry_count: u32) -> i64 {
 }
 
 pub(crate) fn mark_nav_sync_failed(db_id: &str, note_id: &str, nav_id: &str) {
-    if db_id.trim().is_empty() || note_id.trim().is_empty() || nav_id.trim().is_empty() {
-        return;
-    }
-
     index_touch_note(db_id, note_id);
 
     let mut d = load_note_draft(db_id, note_id);
@@ -421,15 +327,8 @@ pub(crate) fn get_due_unsynced_nav_drafts(
     now_ms: i64,
     limit: usize,
 ) -> Vec<(String, String, i64)> {
-    if db_id.trim().is_empty() || note_id.trim().is_empty() {
-        return vec![];
-    }
-
     let mut out = vec![];
     let d = load_note_draft(db_id, note_id);
-    if !d.sync.nav_content_dirty {
-        return out;
-    }
     if !(d.sync.next_retry_ms == 0 || d.sync.next_retry_ms <= now_ms) {
         return out;
     }
@@ -454,15 +353,8 @@ pub(crate) fn get_due_unsynced_nav_meta_drafts(
     now_ms: i64,
     limit: usize,
 ) -> Vec<(String, NavMetaDraft, i64)> {
-    if db_id.trim().is_empty() || note_id.trim().is_empty() {
-        return vec![];
-    }
-
     let mut out = vec![];
     let d = load_note_draft(db_id, note_id);
-    if !d.sync.nav_meta_dirty {
-        return out;
-    }
     if !(d.sync.next_retry_ms == 0 || d.sync.next_retry_ms <= now_ms) {
         return out;
     }
@@ -482,10 +374,6 @@ pub(crate) fn get_due_unsynced_nav_meta_drafts(
 }
 
 pub(crate) fn reconcile_local_nav_meta(db_id: &str, note_id: &str, navs: &mut [Nav]) {
-    if db_id.trim().is_empty() || note_id.trim().is_empty() {
-        return;
-    }
-
     let d = load_note_draft(db_id, note_id);
     if d.nav_state.is_empty() {
         return;
@@ -507,23 +395,7 @@ pub(crate) fn reconcile_local_nav_meta(db_id: &str, note_id: &str, navs: &mut [N
     }
 }
 
-pub(crate) fn resolve_local_note_title(db_id: &str, note_id: &str, server_title: &str) -> String {
-    if db_id.trim().is_empty() || note_id.trim().is_empty() {
-        return server_title.to_string();
-    }
-
-    let d = load_note_draft(db_id, note_id);
-    if d.sync.updated_ms > 0 {
-        return normalize_title_value(&d.title.value);
-    }
-    server_title.to_string()
-}
-
 pub(crate) fn get_unsynced_nav_drafts(db_id: &str, note_id: &str) -> Vec<(String, String, i64)> {
-    if db_id.trim().is_empty() || note_id.trim().is_empty() {
-        return vec![];
-    }
-
     let d = load_note_draft(db_id, note_id);
     d.nav_state
         .iter()
@@ -543,10 +415,6 @@ pub(crate) fn get_unsynced_nav_drafts(db_id: &str, note_id: &str) -> Vec<(String
 /// - content is newer than synced (`updated_ms > synced_ms`), or
 /// - metadata draft is still present (`meta.is_some()`).
 pub(crate) fn get_pending_nav_ids(db_id: &str, note_id: &str) -> BTreeSet<String> {
-    if db_id.trim().is_empty() || note_id.trim().is_empty() {
-        return BTreeSet::new();
-    }
-
     let d = load_note_draft(db_id, note_id);
     d.nav_state
         .iter()
@@ -560,31 +428,6 @@ pub(crate) fn get_pending_nav_ids(db_id: &str, note_id: &str) -> BTreeSet<String
         .collect()
 }
 
-pub(crate) fn resolve_local_nav_content(
-    db_id: &str,
-    note_id: &str,
-    nav_id: &str,
-    server_content: &str,
-) -> String {
-    if db_id.trim().is_empty() || note_id.trim().is_empty() || nav_id.trim().is_empty() {
-        return server_content.to_string();
-    }
-
-    let d = load_note_draft(db_id, note_id);
-    // Use draft if it has content, otherwise fallback to server content.
-    d.nav_state
-        .get(nav_id)
-        .and_then(|b| {
-            let v = b.content.clone();
-            if v.trim().is_empty() {
-                None
-            } else {
-                Some(v)
-            }
-        })
-        .unwrap_or_else(|| server_content.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -594,7 +437,7 @@ mod tests {
             schema_version: NOTE_DRAFT_SCHEMA_CURRENT,
             db_id: "db".to_string(),
             note_id: "note".to_string(),
-            title: default_title_draft(),
+            title: String::new(),
             nav_state: BTreeMap::new(),
             sync: NoteSyncState {
                 updated_ms: 1,
@@ -606,6 +449,7 @@ mod tests {
     #[test]
     fn is_note_fully_synced_requires_meta_cleared() {
         let mut d = base_draft();
+        d.sync.synced_ms = d.sync.updated_ms;
         d.nav_state.insert(
             "n1".to_string(),
             NavDraftState {
@@ -614,7 +458,6 @@ mod tests {
                 content_dirty: false,
             },
         );
-        d.sync.nav_meta_dirty = true;
 
         assert!(!is_note_fully_synced(&d));
     }
@@ -694,7 +537,7 @@ mod wasm_tests {
     use crate::api::ApiClient;
     use crate::drafts::{
         load_note_snapshot, mark_navs_deleted_in_snapshot, reconcile_local_nav_meta,
-        resolve_local_nav_content, save_note_snapshot,
+        save_note_snapshot,
     };
     use crate::models::Nav;
     use crate::util::ROOT_CONTAINER_PARENT_ID;
@@ -703,7 +546,7 @@ mod wasm_tests {
     wasm_bindgen_test_configure!(run_in_browser);
 
     #[wasm_bindgen_test]
-    fn note_draft_nav_and_title_resolution_with_synced_ms_gate() {
+    fn note_draft_nav_and_title_roundtrip() {
         let db_id = "db-test";
         let note_id = "note-test";
         let nav_id = "nav-test";
@@ -715,27 +558,29 @@ mod wasm_tests {
         ApiClient::clear_storage();
 
         touch_title(db_id, note_id, "t1");
-        assert_eq!(resolve_local_note_title(db_id, note_id, "server"), "t1");
+        assert_eq!(load_note_draft(db_id, note_id).title, "t1");
 
         mark_title_synced(db_id, note_id, i64::MAX);
-        assert_eq!(resolve_local_note_title(db_id, note_id, "server"), "server");
+        // New rule: draft exists only while local changes are pending.
+        // After sync ack, per-note draft is pruned and falls back to empty draft title.
+        assert_eq!(load_note_draft(db_id, note_id).title, "");
 
-        touch_nav(db_id, note_id, nav_id, "c1");
+        touch_nav(db_id, note_id, "t1", nav_id, "c1");
+        let nav_state = load_note_draft(db_id, note_id).nav_state;
         assert_eq!(
-            resolve_local_nav_content(db_id, note_id, nav_id, "sv"),
-            "c1"
+            nav_state.get(nav_id).map(|state| state.content.clone()),
+            Some("c1".to_string())
         );
 
         mark_nav_synced(db_id, note_id, nav_id, i64::MAX);
-        assert_eq!(
-            resolve_local_nav_content(db_id, note_id, nav_id, "sv"),
-            "sv"
-        );
+        let nav_state = load_note_draft(db_id, note_id).nav_state;
+        assert!(nav_state.get(nav_id).is_none());
 
-        touch_nav(db_id, note_id, nav_id2, "c2");
+        touch_nav(db_id, note_id, "t1", nav_id2, "c2");
+        let nav_state = load_note_draft(db_id, note_id).nav_state;
         assert_eq!(
-            resolve_local_nav_content(db_id, note_id, nav_id2, "sv2"),
-            "c2"
+            nav_state.get(nav_id2).map(|state| state.content.clone()),
+            Some("c2".to_string())
         );
 
         if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
@@ -766,10 +611,18 @@ mod wasm_tests {
             properties: None,
         }];
 
-        touch_nav(db_id, note_id, nav_id, "local-new");
+        touch_nav(db_id, note_id, "note-refresh-content", nav_id, "local-new");
 
+        let draft = load_note_draft(db_id, note_id);
         for n in rebuilt.iter_mut() {
-            n.content = resolve_local_nav_content(db_id, note_id, &n.id, &n.content);
+            if let Some(local) = draft
+                .nav_state
+                .get(&n.id)
+                .filter(|state| state.content_dirty)
+                .map(|state| state.content.clone())
+            {
+                n.content = local;
+            }
         }
 
         assert_eq!(
@@ -834,7 +687,7 @@ mod wasm_tests {
 
         let mut bb_meta = nav_bb.clone();
         bb_meta.is_delete = true;
-        touch_nav_meta(db_id, note_id, &bb_meta);
+        touch_nav_meta(db_id, note_id, "title-refresh", &bb_meta);
 
         let mut rebuilt = load_note_snapshot(db_id, note_id)
             .expect("snapshot exists")
@@ -878,7 +731,7 @@ mod wasm_tests {
             is_delete: true,
             properties: None,
         };
-        touch_nav_meta(db_id, note_id, &nav);
+        touch_nav_meta(db_id, note_id, "title-nav-meta", &nav);
 
         let due = get_due_unsynced_nav_meta_drafts(db_id, note_id, i64::MAX, 10);
         assert!(
