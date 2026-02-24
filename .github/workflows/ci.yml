@@ -34,6 +34,12 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Check Prettier formatting
+        run: git ls-files -z '*.html' '*.ts' '*.tsx' '*.js' '*.jsx' '*.json' | xargs -0 -r npx prettier --check
+
       - name: Install Tailwind CSS
         run: npm install -g tailwindcss
 

@@ -462,31 +462,53 @@ impl ApiClient {
     }
 
     pub async fn rename_database(&self, database_id: &str, name: &str) -> Result<(), String> {
-        self.request::<()>(
-            "POST",
-            "/hulunote/update-database",
-            Some(&UpdateDatabaseRequest {
-                database_id: Some(database_id.to_string()),
-                id: None,
-                db_name: Some(name.to_string()),
-                is_public: None,
-                is_default: None,
-                is_delete: None,
-            }),
-        )
-        .await
+        let data: serde_json::Value = self
+            .request(
+                "POST",
+                "/hulunote/update-database",
+                Some(&UpdateDatabaseRequest {
+                    database_id: Some(database_id.to_string()),
+                    id: None,
+                    db_name: Some(name.to_string()),
+                    is_public: None,
+                    is_default: None,
+                    is_delete: None,
+                }),
+            )
+            .await?;
+
+        if data
+            .get("success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true)
+        {
+            Ok(())
+        } else {
+            Err(format!("Rename database failed: {data}"))
+        }
     }
 
     pub async fn delete_database_by_id(&self, database_id: &str) -> Result<(), String> {
-        self.request(
-            "POST",
-            "/hulunote/delete-database",
-            Some(&DeleteDatabaseRequest {
-                database_id: Some(database_id.to_string()),
-                database_name: None,
-            }),
-        )
-        .await
+        let data: serde_json::Value = self
+            .request(
+                "POST",
+                "/hulunote/delete-database",
+                Some(&DeleteDatabaseRequest {
+                    database_id: Some(database_id.to_string()),
+                    database_name: None,
+                }),
+            )
+            .await?;
+
+        if data
+            .get("success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true)
+        {
+            Ok(())
+        } else {
+            Err(format!("Delete database failed: {data}"))
+        }
     }
 
     pub async fn create_note(

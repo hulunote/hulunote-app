@@ -1,4 +1,6 @@
-import { defineConfig, devices } from '@playwright/test';
+import { defineConfig, devices } from "@playwright/test"
+
+const AUTH_STATE_PATH = "e2e/.auth/state.json"
 
 /**
  * Read environment variables from file.
@@ -12,7 +14,7 @@ import { defineConfig, devices } from '@playwright/test';
  * See https://playwright.dev/docs/test-configuration.
  */
 export default defineConfig({
-  testDir: './e2e',
+  testDir: "./e2e",
   /* Run tests in files in parallel */
   fullyParallel: true,
   /* Fail the build on CI if you accidentally left test.only in the source code. */
@@ -22,32 +24,39 @@ export default defineConfig({
   /* Opt out of parallel tests on CI. */
   workers: process.env.CI ? 1 : undefined,
   /* Reporter to use. See https://playwright.dev/docs/test-reporters */
-  reporter: 'list',
-  timeout: 30000,  // Each test is given 30 seconds.
+  reporter: "list",
+  timeout: 15000, // Each test is given 15 seconds.
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
   use: {
     /* Base URL to use in actions like `await page.goto('')`. */
-    baseURL: 'http://127.0.0.1:8803',
+    baseURL: "http://127.0.0.1:8803",
 
     /* Collect trace when retrying the failed test. See https://playwright.dev/docs/trace-viewer */
-    trace: 'on-first-retry',
+    trace: "on-first-retry",
   },
 
   /* Configure projects for major browsers */
   projects: [
     {
-      name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
+      name: "setup",
+      testMatch: /.*\.setup\.ts/,
+    },
+    {
+      name: "chromium",
+      use: { ...devices["Desktop Chrome"], storageState: AUTH_STATE_PATH },
+      dependencies: ["setup"],
     },
 
     {
-      name: 'firefox',
-      use: { ...devices['Desktop Firefox'] },
+      name: "firefox",
+      use: { ...devices["Desktop Firefox"], storageState: AUTH_STATE_PATH },
+      dependencies: ["setup"],
     },
 
     {
-      name: 'webkit',
-      use: { ...devices['Desktop Safari'] },
+      name: "webkit",
+      use: { ...devices["Desktop Safari"], storageState: AUTH_STATE_PATH },
+      dependencies: ["setup"],
     },
 
     /* Test against mobile viewports. */
@@ -73,8 +82,8 @@ export default defineConfig({
 
   /* Run your local dev server before starting the tests */
   webServer: {
-    command: 'trunk serve',
-    url: 'http://127.0.0.1:8803/',
+    command: "trunk serve",
+    url: "http://127.0.0.1:8803/",
     reuseExistingServer: !process.env.CI,
   },
-});
+})

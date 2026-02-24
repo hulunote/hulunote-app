@@ -2,6 +2,8 @@
 
 This document summarizes test architecture, validation method, and key commands for `hulunote-app`.
 
+Testing principle: tests exist to expose real business-logic bugs, not to force green results; keep assertions in test/spec, keep non-semantic helpers linear and action-oriented, avoid self-healing branches/exceptions, prefer state-driven synchronization, and avoid regex in tests by default.
+
 ## Test Architecture
 
 - **Host Rust tests**: fast feedback for pure logic and non-browser behavior.
@@ -34,6 +36,13 @@ cargo install wasm-bindgen-cli
 ```
 
 `wasm32` browser tests run through `wasm-bindgen-test-runner`, and that runner requires a browser + WebDriver.
+
+### WASM policy
+
+- For wasm/editor behavior changes, run wasm tests explicitly.
+- Preferred command:
+  - `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner cargo test --target wasm32-unknown-unknown`
+- If wasm tests are not feasible in current environment, state the blocker and provide the exact command for local verification.
 
 ### WebDriver notes
 

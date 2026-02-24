@@ -1486,6 +1486,32 @@ fn restore_editor_focus_for_note(
     target_cursor_col.set(Some(picked.1));
 }
 
+fn set_navs_with_reconciled_editing(
+    navs: RwSignal<Vec<Nav>>,
+    next_navs: Vec<Nav>,
+    editing_id: RwSignal<Option<String>>,
+    editing_snapshot: RwSignal<Option<(String, String)>>,
+    target_cursor_col: RwSignal<Option<u32>>,
+) {
+    let should_clear_editing =
+        should_clear_stale_editing_id(editing_id.get_untracked().as_deref(), &next_navs);
+
+    if should_clear_editing {
+        editing_id.set(None);
+        editing_snapshot.set(None);
+        target_cursor_col.set(None);
+    }
+
+    navs.set(next_navs);
+}
+
+fn should_clear_stale_editing_id(editing_id: Option<&str>, navs: &[Nav]) -> bool {
+    let Some(current) = editing_id else {
+        return false;
+    };
+    !navs.iter().any(|n| n.id == current)
+}
+
 #[component]
 pub fn OutlineEditor(
     note_id: impl Fn() -> String + Clone + Send + Sync + 'static,
@@ -1572,7 +1598,13 @@ pub fn OutlineEditor(
         let db_id_now = app_state.0.current_database_id.get().unwrap_or_default();
 
         if id.trim().is_empty() {
-            navs.set(vec![]);
+            set_navs_with_reconciled_editing(
+                navs,
+                vec![],
+                editing_id,
+                editing_snapshot,
+                target_cursor_col,
+            );
             offline.set(false);
             offline_missing_snapshot.set(false);
             return;
@@ -1645,12 +1677,24 @@ pub fn OutlineEditor(
                 apply_local_draft_overlay_and_refresh_snapshot(
                     &db_id_now, &id, snap_title, &mut xs,
                 );
-                navs.set(xs);
+                set_navs_with_reconciled_editing(
+                    navs,
+                    xs,
+                    editing_id,
+                    editing_snapshot,
+                    target_cursor_col,
+                );
             } else {
                 offline.set(true);
                 offline_missing_snapshot.set(true);
                 error.set(None);
-                navs.set(vec![]);
+                set_navs_with_reconciled_editing(
+                    navs,
+                    vec![],
+                    editing_id,
+                    editing_snapshot,
+                    target_cursor_col,
+                );
             }
             loading.set(false);
             return;
@@ -1738,7 +1782,13 @@ pub fn OutlineEditor(
                     }
 
                     apply_local_draft_overlay_and_refresh_snapshot(&db_id2, &id, title, &mut xs);
-                    navs.set(xs);
+                    set_navs_with_reconciled_editing(
+                        navs,
+                        xs,
+                        editing_id,
+                        editing_snapshot,
+                        target_cursor_col,
+                    );
                 }
                 Err(e) => {
                     sync2.mark_backend_offline_api(&e);
@@ -1779,12 +1829,24 @@ pub fn OutlineEditor(
                             apply_local_draft_overlay_and_refresh_snapshot(
                                 &db_id2, &id, snap_title, &mut xs,
                             );
-                            navs.set(xs);
+                            set_navs_with_reconciled_editing(
+                                navs,
+                                xs,
+                                editing_id,
+                                editing_snapshot,
+                                target_cursor_col,
+                            );
                         } else {
                             offline.set(true);
                             offline_missing_snapshot.set(true);
                             error.set(None);
-                            navs.set(vec![]);
+                            set_navs_with_reconciled_editing(
+                                navs,
+                                vec![],
+                                editing_id,
+                                editing_snapshot,
+                                target_cursor_col,
+                            );
                         }
                     } else {
                         // Non-connectivity error.
@@ -2027,6 +2089,8 @@ pub fn OutlineNode(
     // In multiline mode, Shift+Enter can jump to first-line end and then jump back.
     let shift_enter_return_caret: RwSignal<Option<u32>> = RwSignal::new(None);
     let cursor_save_timer_id: RwSignal<Option<i32>> = RwSignal::new(None);
+    // Cross-row mouse activation should not apply a stale cursor column on focus.
+    let skip_next_focus_col_restore: RwSignal<bool> = RwSignal::new(false);
 
     let nav_id_for_nav = nav_id.clone();
     let nav_id_for_toggle = nav_id.clone();
@@ -2046,11 +2110,22 @@ pub fn OutlineNode(
         if !is_editing {
             return;
         }
+        let title_owns_focus = matches!(
+            app_state.0.focus_owner.get_untracked(),
+            FocusOwner::Title { note_id } if note_id == note_id_for_focus_owner
+        );
+        if title_owns_focus {
+            return;
+        }
         app_state.0.focus_owner.set(FocusOwner::Outline {
             note_id: note_id_for_focus_owner.clone(),
         });
 
-        let col = target_cursor_col.get_untracked();
+        let col = if skip_next_focus_col_restore.get_untracked() {
+            None
+        } else {
+            target_cursor_col.get_untracked()
+        };
         let editing_ref2 = editing_ref;
 
         // Defer to the next animation frame so the contenteditable element is mounted and the
@@ -2470,6 +2545,7 @@ pub fn OutlineNode(
                                     <div class="relative self-start mt-px h-[24px] w-5 inline-flex items-center justify-center text-muted-foreground">
                                         <button
                                             class="self-start mt-px h-[24px] w-5 inline-flex items-center justify-center text-muted-foreground cursor-grab active:cursor-grabbing"
+                                            aria-label="Drag row"
                                             draggable="true"
                                             on:dragstart=move |ev: web_sys::DragEvent| {
                                                 let id = nav_id_sv.get_value();
@@ -2517,7 +2593,23 @@ pub fn OutlineNode(
 
                                         <button
                                             class=marker_class
-                                            on:click=move |ev| on_toggle_cb.run(ev)
+                                            aria-label="Toggle children"
+                                            on:mousedown=move |ev: web_sys::MouseEvent| {
+                                                // Trigger fold/unfold before contenteditable blur/unmount can swallow the click.
+                                                ev.prevent_default();
+                                                ev.stop_propagation();
+                                                on_toggle_cb.run(ev);
+                                            }
+                                            on:click=move |ev: web_sys::MouseEvent| {
+                                                // Keep click from bubbling into row handlers.
+                                                ev.prevent_default();
+                                                ev.stop_propagation();
+                                                // Keyboard activation (Enter/Space) dispatches click without mousedown.
+                                                // detail == 0 is keyboard-synthesized click in browsers.
+                                                if ev.detail() == 0 {
+                                                    on_toggle_cb.run(ev);
+                                                }
+                                            }
                                         >
                                             {marker_view}
                                         </button>
@@ -2528,6 +2620,7 @@ pub fn OutlineNode(
                                 view! {
                                     <button
                                         class="self-start mt-px h-[24px] w-5 inline-flex items-center justify-center text-muted-foreground cursor-grab active:cursor-grabbing"
+                                        aria-label="Drag row"
                                         draggable="true"
                                         on:dragstart=move |ev: web_sys::DragEvent| {
                                             let id = nav_id_sv.get_value();
@@ -2587,110 +2680,121 @@ pub fn OutlineNode(
                                             "cursor-text whitespace-pre-wrap min-h-[22px] w-full min-w-0 flex-1 px-1 py-0.5 text-sm leading-[22px] rounded-md border border-transparent"
                                         };
 
-                                        let id_for_click = nav_id_sv.get_value();
+                                        let id_for_activate = nav_id_sv.get_value();
 
                                         // navigate provided by component scope
                                         let tokens = parse_bidirectional_tokens(&content_display);
+                                        let activate_row_cb = Callback::new(move |(click_x, click_y): (i32, i32)| {
+                                            if let Some(current_id) = editing_id.get_untracked() {
+                                                // IMPORTANT: when the editor surface is contenteditable, the DOM
+                                                // can be ahead of our signal (e.g. certain edit operations).
+                                                // Read from the DOM when possible.
+                                                let current_content = editing_ref
+                                                    .get_untracked()
+                                                    .and_then(|n| n.dyn_into::<web_sys::HtmlElement>().ok())
+                                                    .map(|el| ce_text(&el))
+                                                    .unwrap_or_else(|| editing_value.get_untracked());
 
+                                                // Update local state.
+                                                navs.update(|xs| {
+                                                    let _ = apply_nav_content(xs, &current_id, &current_content);
+                                                });
+
+                                                // Persist to backend only if content changed since we entered edit mode.
+                                                let should_save = editing_snapshot
+                                                    .get_untracked()
+                                                    .filter(|(id, _)| id == &current_id)
+                                                    .map(|(_id, original)| original != current_content)
+                                                    .unwrap_or_else(|| {
+                                                        // Fallback: compare against current nav content.
+                                                        get_nav_content(&navs.get_untracked(), &current_id).unwrap_or_default() != current_content
+                                                    });
+
+                                                if should_save {
+                                                    // Save to local draft; network sync is handled by
+                                                    // NoteSyncController (debounce + retry + offline backoff).
+                                                    let sync_sv = sync_sv;
+                                                    let current_id2 = current_id.clone();
+                                                    let current_content2 = current_content.clone();
+                                                    let _ = sync_sv.try_with_value(|s| {
+                                                        s.on_nav_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &current_id2, &current_content2);
+                                                    });
+                                                }
+                                            }
+
+                                            let id = id_for_activate.clone();
+                                            let next_value = content_for_click.clone();
+
+                                            let db_id = app_state.0.current_database_id.get_untracked().unwrap_or_default();
+                                            let note_id = note_id_sv.get_value();
+                                            let draft = load_note_draft(&db_id, &note_id);
+
+                                            let restored = draft
+                                                .nav_state
+                                                .get(&id)
+                                                .filter(|state| state.content_dirty)
+                                                .map(|state| state.content.clone())
+                                                .unwrap_or_else(|| next_value.clone());
+
+                                            // Explicit user click on outline row must override title-focus intent.
+                                            if app_state
+                                                .0
+                                                .pending_title_select_note_id
+                                                .get_untracked()
+                                                .as_deref()
+                                                == Some(note_id.as_str())
+                                            {
+                                                app_state.0.pending_title_select_note_id.set(None);
+                                            }
+                                            app_state.0.focus_owner.set(FocusOwner::Outline {
+                                                note_id: note_id.clone(),
+                                            });
+
+                                            // Switch editing target on next frame so previous editor can unmount cleanly.
+                                            let activate = Closure::<dyn FnMut()>::new(move || {
+                                                // Clear old row cursor before entering new editing row,
+                                                // so focus effect does not apply a stale column first.
+                                                target_cursor_col.set(None);
+                                                skip_next_focus_col_restore.set(true);
+                                                editing_id.set(Some(id.clone()));
+                                                editing_value.set(restored.clone());
+                                                editing_snapshot.set(Some((id.clone(), restored.clone())));
+
+                                                // Then place caret by click point on a second frame, after contenteditable mount.
+                                                let editing_ref3 = editing_ref;
+                                                let target_cursor_col3 = target_cursor_col;
+                                                let place = Closure::<dyn FnMut()>::new(move || {
+                                                    if let Some(el) = editing_ref3
+                                                        .get_untracked()
+                                                        .and_then(|n| n.dyn_into::<web_sys::HtmlElement>().ok())
+                                                    {
+                                                        let _ = ce_set_caret_from_client_point(
+                                                            &el, click_x, click_y,
+                                                        );
+                                                        let (col, _end, _len) = ce_selection_utf16(&el);
+                                                        target_cursor_col3.set(Some(col));
+                                                    }
+                                                });
+                                                let _ = window().request_animation_frame(
+                                                    place.as_ref().unchecked_ref(),
+                                                );
+                                                place.forget();
+                                            });
+                                            let _ = window().request_animation_frame(
+                                                activate.as_ref().unchecked_ref(),
+                                            );
+                                            activate.forget();
+                                        });
                                         return view! {
                                             <div
                                                 class=content_class
+                                                role="button"
+                                                aria-label="Outline row"
                                                 on:mousedown=move |ev: web_sys::MouseEvent| {
-                                                    // Use mousedown (not click) for single-click switching.
-                                                    // IMPORTANT: don't rely on `blur` to save. When a focused input is
-                                                    // unmounted by state updates, browsers may not fire blur reliably.
-                                                    // Save the current editing buffer explicitly before switching.
-
-                                                    if let Some(current_id) = editing_id.get_untracked() {
-                                                        // IMPORTANT: when the editor surface is contenteditable, the DOM
-                                                        // can be ahead of our signal (e.g. certain edit operations).
-                                                        // Read from the DOM when possible.
-                                                        let current_content = editing_ref
-                                                            .get_untracked()
-                                                            .and_then(|n| n.dyn_into::<web_sys::HtmlElement>().ok())
-                                                            .map(|el| ce_text(&el))
-                                                            .unwrap_or_else(|| editing_value.get_untracked());
-
-                                                        // Update local state.
-                                                        navs.update(|xs| {
-                                                            let _ = apply_nav_content(xs, &current_id, &current_content);
-                                                        });
-
-                                                        // Persist to backend only if content changed since we entered edit mode.
-                                                        let should_save = editing_snapshot
-                                                            .get_untracked()
-                                                            .filter(|(id, _)| id == &current_id)
-                                                            .map(|(_id, original)| original != current_content)
-                                                            .unwrap_or_else(|| {
-                                                                // Fallback: compare against current nav content.
-                                                                get_nav_content(&navs.get_untracked(), &current_id).unwrap_or_default() != current_content
-                                                            });
-
-                                                        if should_save {
-                                                            // Save to local draft; network sync is handled by
-                                                            // NoteSyncController (debounce + retry + offline backoff).
-                                                            let sync_sv = sync_sv;
-                                                            let current_id2 = current_id.clone();
-                                                            let current_content2 = current_content.clone();
-                                                            let _ = sync_sv.try_with_value(|s| {
-                                                                s.on_nav_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &current_id2, &current_content2);
-                                                            });
-                                                        }
+                                                    if ev.button() != 0 {
+                                                        return;
                                                     }
-
-                                                    // Defer the actual switch so the current input can unmount cleanly.
-                                                    let click_x = ev.client_x();
-                                                    let click_y = ev.client_y();
-
-                                                    let id = id_for_click.clone();
-                                                    let next_value = content_for_click.clone();
-                                                    let editing_id = editing_id;
-                                                    let editing_value = editing_value;
-                                                    let editing_snapshot = editing_snapshot;
-                                                    let target_cursor_col = target_cursor_col;
-                                                    let editing_ref2 = editing_ref;
-
-                                                    let db_id = app_state.0.current_database_id.get_untracked().unwrap_or_default();
-                                                    let note_id = note_id_sv.get_value();
-                                                    let draft = load_note_draft(&db_id, &note_id);
-
-                                                    let cb = Closure::<dyn FnMut()>::new(move || {
-                                                        let restored = draft
-                                                            .nav_state
-                                                            .get(&id)
-                                                            .filter(|state| state.content_dirty)
-                                                            .map(|state| state.content.clone())
-                                                            .unwrap_or_else(|| next_value.clone());
-
-                                                        editing_id.set(Some(id.clone()));
-                                                        editing_value.set(restored.clone());
-                                                        editing_snapshot.set(Some((id.clone(), restored.clone())));
-                                                        // Let the follow-up point-based placement decide caret position.
-                                                        target_cursor_col.set(None);
-
-                                                        let editing_ref3 = editing_ref2;
-                                                        let click_x2 = click_x;
-                                                        let click_y2 = click_y;
-                                                        let target_cursor_col2 = target_cursor_col;
-                                                        let place = Closure::<dyn FnMut()>::new(move || {
-                                                            if let Some(el) = editing_ref3
-                                                                .get_untracked()
-                                                                .and_then(|n| n.dyn_into::<web_sys::HtmlElement>().ok())
-                                                            {
-                                                                let _ = ce_set_caret_from_client_point(&el, click_x2, click_y2);
-                                                                let (col, _end, _len) = ce_selection_utf16(&el);
-                                                                target_cursor_col2.set(Some(col));
-                                                            }
-                                                        });
-                                                        let _ = window().request_animation_frame(
-                                                            place.as_ref().unchecked_ref(),
-                                                        );
-                                                        place.forget();
-                                                    });
-                                                    let _ = window().request_animation_frame(
-                                                        cb.as_ref().unchecked_ref(),
-                                                    );
-                                                    cb.forget();
+                                                    activate_row_cb.run((ev.client_x(), ev.client_y()));
                                                 }
                                             >
                                                 {{
@@ -3166,6 +3270,7 @@ pub fn OutlineNode(
                                             node_ref=editing_ref
                                             contenteditable="true"
                                             role="textbox"
+                                            aria-label="Outline row editor"
                                             // Store stable ids on the DOM node so blur handlers can read them even if
                                             // reactive values are disposed during navigation/unmount.
                                             attr:data-nav-id=nav_id_sv.get_value()
@@ -3372,6 +3477,11 @@ pub fn OutlineNode(
                                                 else {
                                                     return;
                                                 };
+
+                                                if skip_next_focus_col_restore.get_untracked() {
+                                                    skip_next_focus_col_restore.set(false);
+                                                    return;
+                                                }
 
                                                 let Some(col) = target_cursor_col.get_untracked() else {
                                                     return;
@@ -4692,6 +4802,28 @@ pub fn OutlineNode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_nav(id: &str) -> Nav {
+        Nav {
+            id: id.to_string(),
+            note_id: "note".to_string(),
+            parid: "root".to_string(),
+            same_deep_order: 1.0,
+            content: String::new(),
+            is_display: true,
+            is_delete: false,
+            properties: None,
+        }
+    }
+
+    #[test]
+    fn should_clear_stale_editing_id_only_when_row_is_missing() {
+        let navs = vec![test_nav("a"), test_nav("b")];
+
+        assert!(!should_clear_stale_editing_id(None, &navs));
+        assert!(!should_clear_stale_editing_id(Some("a"), &navs));
+        assert!(should_clear_stale_editing_id(Some("missing"), &navs));
+    }
 
     #[test]
     fn collect_visible_preorder_ids_filters_deleted() {

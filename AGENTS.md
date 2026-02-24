@@ -94,10 +94,15 @@ Avoid interactive git flows that can hang in non-TTY environments.
 
 ## Testing Policy
 
-- For wasm/editor behavior changes, run wasm tests explicitly.
-- Preferred command:
-  - `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner cargo test --target wasm32-unknown-unknown`
-- If wasm tests are not feasible in current environment, state the blocker and provide the exact command for local verification.
+- The goal of testing is to detect potential business-logic bugs, not to make test cases pass by masking real issues.
+- For flaky e2e failures, first analyze and harden spec instability (locator strategy, state-driven waits, assertions) before changing business logic.
+- Prefer fixing flaky tests inside spec files; do not add browser-specific skips/fixme or special-case test code purely to bypass failures.
+- Default rule: helpers perform actions and return data; assertions belong in test/spec files.
+- Avoid "self-healing" logic in tests/helpers (for example auto-deleting data to force pass); expose real failures.
+- Avoid defensive branching in tests; prefer direct assertions with clear expected outcomes.
+- For all test types, avoid conditional branches and manual exception throwing in non-semantic helpers; keep helper logic linear and surface failures through test/spec assertions.
+- For all test types, avoid regex in assertions/locators by default; prefer exact text/value/path checks unless regex is strictly necessary.
+- Keep waits minimal and state-driven; avoid redundant pre-action waits.
 
 ## Formatting Policy
 

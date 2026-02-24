@@ -346,7 +346,7 @@ pub fn HomeRecentsPage() -> impl IntoView {
             <div class="grid gap-3 sm:grid-cols-2">
                 <For
                     each=move || app_state.0.databases.get()
-                    key=|db| db.id.clone()
+                    key=|db| format!("{}:{}:{}", db.id, db.name, db.description)
                     children=move |db| {
                         let id = db.id.clone();
                         let name = db.name.clone();
@@ -380,6 +380,7 @@ pub fn HomeRecentsPage() -> impl IntoView {
                                         size=ButtonSize::Icon
                                         class="h-7 w-7"
                                         attr:title="Rename"
+                                        attr:aria-label={format!("Rename database {}", name_for_rename)}
                                         on:click=move |ev: web_sys::MouseEvent| {
                                             ev.stop_propagation();
                                             actions.open_rename.run((id_for_rename.clone(), name_for_rename.clone()));
@@ -408,6 +409,7 @@ pub fn HomeRecentsPage() -> impl IntoView {
                                         size=ButtonSize::Icon
                                         class="h-7 w-7 text-destructive"
                                         attr:title="Delete"
+                                        attr:aria-label={format!("Delete database {}", name_for_delete)}
                                         on:click=move |ev: web_sys::MouseEvent| {
                                             ev.stop_propagation();
                                             actions.open_delete.run((id_for_delete.clone(), name_for_delete.clone()));
@@ -441,6 +443,8 @@ pub fn HomeRecentsPage() -> impl IntoView {
                 <Card
                     class="group relative flex h-40 cursor-pointer items-center justify-center border-dashed transition-colors hover:bg-surface-hover hover:ring-1 hover:ring-border"
                     on:click=move |_| actions.open_create.run(())
+                    attr:role="button"
+                    attr:aria-label="New database"
                 >
                     <div class="flex flex-col items-center gap-2 p-6">
                         <div class="flex h-10 w-10 items-center justify-center rounded-full border border-border bg-background">
@@ -562,16 +566,6 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
         // Focus is handled by an Effect once the dialog is mounted.
     };
 
-    let refresh_databases = move || {
-        let mut c = app_state.0.api_client.get_untracked();
-        spawn_local(async move {
-            if let Ok(dbs) = c.get_database_list().await {
-                app_state.0.databases.set(dbs);
-            }
-            app_state.0.api_client.set(c);
-        });
-    };
-
     // Focus the create-db name input when the dialog opens.
     Effect::new(move |_| {
         if !create_open.get() {
@@ -619,8 +613,8 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
         spawn_local(async move {
             match api_client.rename_database(&id, &new_name).await {
                 Ok(_) => {
-                    refresh_databases();
                     rename_open.set(false);
+                    let _ = window().location().reload();
                 }
                 Err(e) => rename_error.set(Some(e)),
             }
@@ -668,7 +662,6 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
         spawn_local(async move {
             match api_client.delete_database_by_id(&id).await {
                 Ok(_) => {
-                    refresh_databases();
                     delete_open.set(false);
 
                     // If we are currently inside this DB, go Home.
@@ -680,6 +673,7 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
                     if current_db_id.get_untracked().as_deref() == Some(id.as_str()) {
                         set_current_db(None);
                     }
+                    let _ = window().location().reload();
                 }
                 Err(e) => delete_error.set(Some(e)),
             }
@@ -866,40 +860,9 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
 
         spawn_local(async move {
             match api_client.create_database(&name, &desc).await {
-                Ok(v) => {
-                    // Try to extract the created database id from the response.
-                    let new_id = v
-                        .get("database")
-                        .and_then(|d| {
-                            d.get("hulunote-databases/id")
-                                .or_else(|| d.get("id"))
-                                .and_then(|x| x.as_str())
-                        })
-                        .map(|s| s.to_string());
-
-                    // Refresh DB list from backend.
-                    let mut c = app_state.0.api_client.get_untracked();
-                    match c.get_database_list().await {
-                        Ok(dbs) => {
-                            app_state.0.databases.set(dbs);
-                            app_state.0.api_client.set(c);
-                        }
-                        Err(_) => {
-                            app_state.0.api_client.set(c);
-                        }
-                    }
-
-                    if let Some(id) = new_id {
-                        set_current_db(Some(id.clone()));
-                        // Navigate to the new database home.
-                        // We cannot call navigate directly here; store selection and rely on caller UI.
-                        // (navigation is triggered below on the main thread)
-                        navigate.with_value(|nav| {
-                            nav(&format!("/db/{}", id), Default::default());
-                        });
-                    }
-
+                Ok(_) => {
                     create_open.set(false);
+                    let _ = window().location().reload();
                 }
                 Err(e) => {
                     create_error.set(Some(e));
@@ -1267,6 +1230,7 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
                                                 size=ButtonSize::Icon
                                                 on:click=move |_| open_create_dialog()
                                                 attr:title="New database"
+                                                attr:aria-label="New database"
                                                 class="h-7 w-7"
                                             >
                                                 <span class="text-xs text-muted-foreground">"+"</span>
@@ -1709,6 +1673,7 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
                                     <Input
                                         node_ref=create_name_ref
                                         bind_value=create_name
+                                        attr:aria-label="Database name"
                                         // Improve visibility when unfocused (some themes make the default border too subtle).
                                         class="h-8 text-sm border-border bg-background"
                                     />
@@ -1768,7 +1733,7 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
                             <div class="space-y-2">
                                 <div class="space-y-1">
                                     <Label class="text-xs">"New name"</Label>
-                                    <Input bind_value=rename_value class="h-8 text-sm" />
+                                    <Input bind_value=rename_value attr:aria-label="New database name" class="h-8 text-sm" />
                                 </div>
 
                                 <Show when=move || rename_error.get().is_some() fallback=|| ().into_view()>
@@ -1823,7 +1788,12 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
 
                                 <div class="space-y-1">
                                     <Label class="text-xs">"Confirm name"</Label>
-                                    <Input bind_value=delete_confirm class="h-8 text-sm" placeholder="Type name exactly" />
+                                    <Input
+                                        bind_value=delete_confirm
+                                        attr:aria-label="Confirm database name"
+                                        class="h-8 text-sm"
+                                        placeholder="Type name exactly"
+                                    />
                                 </div>
 
                                 <Show when=move || delete_error.get().is_some() fallback=|| ().into_view()>
@@ -1866,9 +1836,14 @@ pub fn AppLayout(children: ChildrenFn) -> impl IntoView {
 
                 <Show when=move || note_delete_open.get() fallback=|| ().into_view()>
                     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4">
-                        <div class="w-full max-w-sm rounded-md border border-border bg-background p-4 shadow-lg">
+                        <div
+                            class="w-full max-w-sm rounded-md border border-border bg-background p-4 shadow-lg"
+                            role="dialog"
+                            aria-modal="true"
+                            aria-labelledby="delete-note-dialog-title"
+                        >
                             <div class="mb-3 space-y-1">
-                                <div class="text-sm font-medium text-destructive">"Delete note"</div>
+                                <div id="delete-note-dialog-title" class="text-sm font-medium text-destructive">"Delete note"</div>
                                 <div class="text-xs text-muted-foreground">
                                     {move || format!("Are you sure you want to delete \"{}\" ?", note_delete_title.get())}
                                 </div>
@@ -2278,12 +2253,13 @@ pub fn NotePage() -> impl IntoView {
     });
 
     // For newly created local notes, place caret in title field immediately.
+    let app_state_for_title_focus = app_state.clone();
     Effect::new(move |_| {
         let id = note_id();
         if id.trim().is_empty() {
             return;
         }
-        let is_new_note_intent = app_state
+        let is_new_note_intent = app_state_for_title_focus
             .0
             .pending_title_select_note_id
             .get()
@@ -2293,16 +2269,28 @@ pub fn NotePage() -> impl IntoView {
         if !is_new_note_intent || title_note_id.get() != id {
             return;
         }
-        app_state.0.focus_owner.set(FocusOwner::Title {
-            note_id: id.clone(),
-        });
-        app_state.0.pending_title_select_note_id.set(None);
+        // Consume one-shot "select title" intent immediately once it is applied.
+        app_state_for_title_focus
+            .0
+            .pending_title_select_note_id
+            .set(None);
+        app_state_for_title_focus
+            .0
+            .focus_owner
+            .set(FocusOwner::Title {
+                note_id: id.clone(),
+            });
 
+        let app_state2 = app_state_for_title_focus.clone();
+        let id2 = id.clone();
         let _ = window().request_animation_frame(
             wasm_bindgen::closure::Closure::once_into_js(move || {
                 if let Some(input) = title_input_ref.get_untracked() {
                     let _ = input.focus();
                     input.select();
+                    app_state2.0.focus_owner.set(FocusOwner::Title {
+                        note_id: id2.clone(),
+                    });
                 }
             })
             .as_ref()
@@ -2400,6 +2388,7 @@ pub fn NotePage() -> impl IntoView {
                     <Input
                         node_ref=title_input_ref
                         bind_value=title_value
+                        attr:aria-label="Note title"
                         class=title_input_class
                         on:input=move |ev: web_sys::Event| {
                             let db = db_id_untracked();
@@ -2421,6 +2410,15 @@ pub fn NotePage() -> impl IntoView {
                             // Write to draft immediately and schedule autosave (consistent with nav editing).
                             // Sync is handled by NoteSyncController (autosave + blur flush).
                             let _ = sync_sv.try_with_value(|s| s.on_title_changed(&v));
+                            if app_state
+                                .0
+                                .pending_title_select_note_id
+                                .get_untracked()
+                                .as_deref()
+                                == Some(id.as_str())
+                            {
+                                app_state.0.pending_title_select_note_id.set(None);
+                            }
                         }
                         on:focus=move |_| {
                             let id = note_id_untracked();
@@ -2431,6 +2429,15 @@ pub fn NotePage() -> impl IntoView {
                         }
                         on:blur=move |_| {
                             save_title();
+                            if app_state
+                                .0
+                                .pending_title_select_note_id
+                                .get_untracked()
+                                .as_deref()
+                                == Some(note_id_untracked().as_str())
+                            {
+                                app_state.0.pending_title_select_note_id.set(None);
+                            }
                             app_state.0.focus_owner.set(FocusOwner::None);
                         }
                         on:keydown=move |ev: web_sys::KeyboardEvent| {
@@ -2855,37 +2862,6 @@ pub fn DbHomePage() -> impl IntoView {
         app_state.0.databases.get().into_iter().find(|d| d.id == id)
     };
 
-    let refresh_databases = move || {
-        let mut c = app_state.0.api_client.get_untracked();
-        spawn_local(async move {
-            match c.get_database_list().await {
-                Ok(dbs) => {
-                    app_state.0.databases.set(dbs);
-                }
-                Err(e) => {
-                    if e == "Unauthorized" {
-                        c.logout();
-                        app_state.0.api_client.set(c);
-                        app_state.0.current_user.set(None);
-                        let _ = window().location().set_href("/login");
-                        return;
-                    }
-                }
-            }
-            app_state.0.api_client.set(c);
-        });
-    };
-
-    let _refresh_databases = move || {
-        let mut c = app_state.0.api_client.get_untracked();
-        spawn_local(async move {
-            if let Ok(dbs) = c.get_database_list().await {
-                app_state.0.databases.set(dbs);
-            }
-            app_state.0.api_client.set(c);
-        });
-    };
-
     let _on_open_rename = move |_: web_sys::MouseEvent| {
         rename_error.set(None);
         if let Some(d) = db() {
@@ -2912,8 +2888,8 @@ pub fn DbHomePage() -> impl IntoView {
         spawn_local(async move {
             match api_client.rename_database(&id, &new_name).await {
                 Ok(_) => {
-                    refresh_databases();
                     rename_open.set(false);
+                    let _ = window().location().reload();
                 }
                 Err(e) => rename_error.set(Some(e)),
             }
@@ -2949,26 +2925,13 @@ pub fn DbHomePage() -> impl IntoView {
         spawn_local(async move {
             match api_client.delete_database_by_id(&id).await {
                 Ok(_) => {
-                    // Reload DBs and navigate to the first remaining DB (or /).
-                    let mut c = app_state.0.api_client.get_untracked();
-                    if let Ok(dbs) = c.get_database_list().await {
-                        app_state.0.databases.set(dbs.clone());
-                        if let Some(first) = dbs.first() {
-                            app_state.0.current_database_id.set(Some(first.id.clone()));
-                            persist_current_db(&first.id);
-                            navigate.with_value(|nav| {
-                                nav(&format!("/db/{}", first.id), Default::default());
-                            });
-                        } else {
-                            app_state.0.current_database_id.set(None);
-                            persist_current_db("");
-                            navigate.with_value(|nav| {
-                                nav("/", Default::default());
-                            });
-                        }
-                    }
-                    app_state.0.api_client.set(c);
+                    app_state.0.current_database_id.set(None);
+                    persist_current_db("");
+                    navigate.with_value(|nav| {
+                        nav("/", Default::default());
+                    });
                     delete_open.set(false);
+                    let _ = window().location().reload();
                 }
                 Err(e) => delete_error.set(Some(e)),
             }
