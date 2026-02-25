@@ -1084,12 +1084,9 @@ fn can_soft_delete_empty_nav(all: &[Nav], nav_id: &str) -> bool {
         return false;
     }
 
-    // Rule 1: the first visible top-level nav is protected.
-    if collect_visible_top_level_nodes(all)
-        .first()
-        .map(|n| n.id.as_str() == nav_id)
-        .unwrap_or(false)
-    {
+    // Rule 1: only the unique visible top-level nav is protected.
+    let top_level = collect_visible_top_level_nodes(all);
+    if top_level.len() == 1 && top_level[0].id == nav_id {
         return false;
     }
 
@@ -4935,7 +4932,7 @@ mod tests {
     }
 
     #[test]
-    fn can_soft_delete_empty_nav_blocks_first_top_level() {
+    fn can_soft_delete_empty_nav_blocks_only_unique_top_level() {
         let note_id = "n1".to_string();
         let root_parent = ROOT_CONTAINER_PARENT_ID.to_string();
 
@@ -4974,8 +4971,40 @@ mod tests {
 
         let all = vec![root_container, first, second];
 
-        assert!(!can_soft_delete_empty_nav(&all, "first"));
+        assert!(can_soft_delete_empty_nav(&all, "first"));
         assert!(can_soft_delete_empty_nav(&all, "second"));
+    }
+
+    #[test]
+    fn can_soft_delete_empty_nav_blocks_unique_top_level() {
+        let note_id = "n1".to_string();
+        let root_parent = ROOT_CONTAINER_PARENT_ID.to_string();
+
+        let root_container = Nav {
+            id: "root-container".to_string(),
+            note_id: note_id.clone(),
+            parid: root_parent,
+            same_deep_order: 0.0,
+            content: "ROOT".to_string(),
+            is_display: true,
+            is_delete: false,
+            properties: None,
+        };
+
+        let only = Nav {
+            id: "only".to_string(),
+            note_id,
+            parid: "root-container".to_string(),
+            same_deep_order: 1.0,
+            content: "".to_string(),
+            is_display: true,
+            is_delete: false,
+            properties: None,
+        };
+
+        let all = vec![root_container, only];
+
+        assert!(!can_soft_delete_empty_nav(&all, "only"));
     }
 
     #[test]
