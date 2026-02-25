@@ -2124,11 +2124,16 @@ pub fn OutlineNode(
             target_cursor_col.get_untracked()
         };
         let editing_ref2 = editing_ref;
+        let editing_id2 = editing_id;
 
         // Defer to the next animation frame so the contenteditable element is mounted and the
         // NodeRef is populated, without accumulating unbounded setTimeout callbacks.
         let _ = web_sys::window().unwrap().request_animation_frame(
             wasm_bindgen::closure::Closure::once_into_js(move || {
+                // Ignore stale scheduled callbacks after editing target switched.
+                if editing_id2.get_untracked().as_deref() != Some(my_id.as_str()) {
+                    return;
+                }
                 // This callback runs outside reactive tracking; use untracked access.
                 let Some(el) = editing_ref2.get_untracked() else {
                     return;
@@ -3577,9 +3582,8 @@ pub fn OutlineNode(
                                                         return;
                                                     }
 
-                                                    // Persist caret so window/tab switches can restore exact position.
+                                                    // Persist caret to storage only; do not update in-memory focus restore state here.
                                                     let (caret_col, _caret_end, _len_before) = ce_selection_utf16(&el);
-                                                    target_cursor_col.set(Some(caret_col));
                                                     save_note_cursor(
                                                         &db_id_fallback,
                                                         &note_id_now,
