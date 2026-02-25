@@ -3487,14 +3487,7 @@ pub fn OutlineNode(
                                                     return;
                                                 };
 
-                                                let el2 = el.clone();
-                                                let cb = Closure::<dyn FnMut()>::new(move || {
-                                                    ce_set_caret_utf16(&el2, col);
-                                                });
-                                                let _ = window().request_animation_frame(
-                                                    cb.as_ref().unchecked_ref(),
-                                                );
-                                                cb.forget();
+                                                ce_set_caret_utf16(&el, col);
                                             }
                                             on:compositionstart=move |_ev: web_sys::CompositionEvent| {
                                                 is_composing.set(true);
