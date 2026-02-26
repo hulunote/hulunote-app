@@ -2677,7 +2677,9 @@ pub fn OutlineNode(
                                             content_now
                                         };
                                         let content_class = if is_empty_display {
-                                            "cursor-text whitespace-pre-wrap min-h-[22px] w-full min-w-0 flex-1 px-1 py-0.5 text-sm leading-[22px] rounded-md border border-transparent text-muted-foreground/70 italic"
+                                            // Keep empty read-mode row height aligned with contenteditable focus height
+                                            // to avoid layout jump when entering edit mode.
+                                            "cursor-text whitespace-pre-wrap min-h-[28px] w-full min-w-0 flex-1 px-1 py-0.5 text-sm leading-[22px] rounded-md border border-transparent text-muted-foreground/70 italic"
                                         } else {
                                             "cursor-text whitespace-pre-wrap min-h-[22px] w-full min-w-0 flex-1 px-1 py-0.5 text-sm leading-[22px] rounded-md border border-transparent"
                                         };
