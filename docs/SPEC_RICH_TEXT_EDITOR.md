@@ -1,6 +1,6 @@
 # Phase 9 — Rich Text Editor (contenteditable) SPEC
 
-Status: Draft (approved direction, pending a few clarifications)
+Status: Draft (approved direction, phased rollout)
 
 ## 0. Goals / Non-goals
 
@@ -26,7 +26,17 @@ Status: Draft (approved direction, pending a few clarifications)
 
 ## 1. Data model
 
-### 1.1 Storage location
+### 1.0 Rollout phases
+
+- **Phase 9A (current baseline)**:
+  - `Nav.content` remains the editing/rendering source.
+  - Inline formatting is Markdown-token based (`**`, `*`, `` ` ``) with contenteditable rendering.
+  - No `properties.rt.doc` persistence yet.
+- **Phase 9B (target architecture)**:
+  - Introduce `properties.rt.doc` as rich-text source-of-truth.
+  - Keep `Nav.content` as plain-text mirror for backlinks/search compatibility.
+
+### 1.1 Storage location (Phase 9B target)
 Store structured rich-text under `Nav.properties` (assume JSON is preserved by backend):
 
 ```json
@@ -38,7 +48,7 @@ Store structured rich-text under `Nav.properties` (assume JSON is preserved by b
 }
 ```
 
-### 1.2 Relationship with `Nav.content`
+### 1.2 Relationship with `Nav.content` (Phase 9B target)
 Use **dual representation** (recommended):
 - `properties.rt.doc` is the source-of-truth rich-text document.
 - `Nav.content` remains a **plain-text mirror** derived from the doc.
@@ -47,7 +57,7 @@ Rationale:
 - Minimizes refactors: existing backlinks/link extraction can continue reading `Nav.content`.
 - Allows incremental rollout: nodes without `properties.rt` still render/edit.
 
-### 1.3 AST shape (v1)
+### 1.3 AST shape (v1, Phase 9B target)
 A minimal AST that supports marks + links and is easy to serialize:
 
 ```json
@@ -90,6 +100,12 @@ Notes:
 ### 2.2 Edit mode
 - Render the same structure into a `contenteditable` surface.
 - Do **not** rely on `document.execCommand` (deprecated / inconsistent).
+
+### 2.3 Current implementation baseline (Phase 9A)
+
+- Read mode renders inline markdown and wiki-links from `Nav.content`.
+- Edit mode uses `contenteditable`; markdown tokens are rendered when caret is outside a token range, and shown raw when caret is inside that range.
+- Persistence still writes plain text to `Nav.content`.
 
 ## 3. Editing core (contenteditable)
 
@@ -141,7 +157,7 @@ On selection:
 ## 7. Keyboard shortcuts (Phase 9 initial)
 
 No toolbar required.
-Implement:
+Target (Phase 9B):
 - `Cmd/Ctrl+B`: toggle bold
 - `Cmd/Ctrl+I`: toggle italic
 - `` Cmd/Ctrl+` ``: toggle inline code

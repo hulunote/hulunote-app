@@ -423,6 +423,6 @@ It is written as product behavior (not implementation detail) and is intended to
 
 ### 9.4 Current limitations
 
-- Drag-and-drop reorder has no dedicated visual drop indicator yet.
-- Multi-line textarea/autosize editing is not implemented.
+- Rich-text document model (`properties.rt.doc`) is not enabled yet; current formatting is Markdown-token based.
+- Formatting shortcuts (`Cmd/Ctrl+B`, `Cmd/Ctrl+I`, ``Cmd/Ctrl+` ``) are not implemented yet.
 - Advanced outline operations (merge/split, block references) are out of scope.

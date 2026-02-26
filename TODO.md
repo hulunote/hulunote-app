@@ -56,7 +56,7 @@
 - [x] Implement note creation (one-click "New" creates daily note title)
 - [x] Implement note detail view (route + title edit on `/db/:db_id/note/:note_id`)
 - [x] Implement note editing (rename/title via update endpoint)
-- [ ] Implement note deletion *(N/A: backend has no delete-note endpoint in protected routes)*
+- [x] Implement note deletion *(soft delete via `POST /hulunote/update-hulunote-note` with `is-delete: true`)*
 - [x] Create page tree navigation (based on notes)
 - [x] Connect to `POST /hulunote/new-note`
   - Supports optional `note-id` and `root-nav-id` for client-generated UUID flow
@@ -167,7 +167,7 @@ Goal: Make post-login UX match product intent: Home shows recents, databases are
 ## Phase 9: Rich Text Content
 
 - [ ] Implement block-based content
-- [x] Implement text formatting (bold, italic, etc.) *(basic read-only Markdown inline rendering: `**bold**`, `*italic*`, `` `code` ``)*
+- [x] Implement text formatting (bold, italic, etc.) *(Markdown inline rendering in read mode + editing mode with caret-range raw token fallback: `**bold**`, `*italic*`, `` `code` ``)*
 - [ ] Implement code blocks
 - [ ] Implement image blocks
 - [ ] Implement block type switching
