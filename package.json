@@ -1,8 +1,9 @@
 {
   "type": "module",
+  "packageManager": "pnpm@9.15.9",
   "scripts": {
-    "test:e2e": "npx playwright test",
-    "format:check": "prettier \"**/*.{js,jsx,ts,tsx,json,html,css,yml,yaml}\" --check"
+    "test:e2e": "playwright test",
+    "format:check": "prettier \"**/*.{js,jsx,ts,tsx,json,html,css}\" --check"
   },
   "dependencies": {
     "@tailwindcss/cli": "^4.1.18",
