@@ -167,7 +167,7 @@ Goal: Make post-login UX match product intent: Home shows recents, databases are
 ## Phase 9: Rich Text Content
 
 - [ ] Implement block-based content
-- [ ] Implement text formatting (bold, italic, etc.)
+- [x] Implement text formatting (bold, italic, etc.) *(basic read-only Markdown inline rendering: `**bold**`, `*italic*`, `` `code` ``)*
 - [ ] Implement code blocks
 - [ ] Implement image blocks
 - [ ] Implement block type switching

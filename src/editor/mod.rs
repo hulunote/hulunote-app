@@ -230,6 +230,14 @@ fn escape_html(s: &str) -> String {
     render::escape_html(s)
 }
 
+fn render_basic_markdown_inline_html(s: &str) -> String {
+    render::render_basic_markdown_inline_html(s)
+}
+
+fn render_basic_markdown_inline_html_for_editing(s: &str, caret_byte: Option<usize>) -> String {
+    render::render_basic_markdown_inline_html_for_editing(s, caret_byte)
+}
+
 fn set_popover_open(el: &web_sys::Element, open: bool) {
     if !el.is_connected() {
         return;
@@ -250,12 +258,30 @@ fn set_popover_open(el: &web_sys::Element, open: bool) {
     let _ = f.call0(el);
 }
 
-fn wiki_highlight_html(s: &str) -> String {
+fn wiki_highlight_html(s: &str, caret_utf16: Option<u32>) -> String {
+    let caret_byte = caret_utf16.map(|p| utf16_to_byte_idx(s, p));
+    let mut cursor = 0usize;
     let mut out = String::new();
     for t in parse_bidirectional_tokens(s) {
-        match t {
-            BidirectionalToken::Text(txt) => out.push_str(&escape_html(&txt)),
+        match t.clone() {
+            BidirectionalToken::Text(txt) => {
+                let seg_start = cursor;
+                let seg_end = seg_start + txt.len();
+                let seg_caret = caret_byte.and_then(|p| {
+                    if p >= seg_start && p <= seg_end {
+                        Some(p - seg_start)
+                    } else {
+                        None
+                    }
+                });
+                out.push_str(&render_basic_markdown_inline_html_for_editing(
+                    &txt, seg_caret,
+                ));
+                cursor = seg_end;
+            }
             BidirectionalToken::Link(label) => {
+                // Keep caret-byte mapping aligned with source bytes.
+                cursor += 2 + label.len() + 2;
                 if label.is_empty() {
                     out.push_str("[[]]");
                 } else {
@@ -270,9 +296,26 @@ fn wiki_highlight_html(s: &str) -> String {
     out
 }
 
-fn ce_set_wiki_highlighted(el: &web_sys::HtmlElement, s: &str) {
-    let html = wiki_highlight_html(s);
+fn ce_set_wiki_highlighted(el: &web_sys::HtmlElement, s: &str, caret_utf16: Option<u32>) {
+    let html = wiki_highlight_html(s, caret_utf16);
     el.set_inner_html(&html);
+}
+
+fn ce_set_text_and_restore_caret_with_highlight(
+    el: &web_sys::HtmlElement,
+    text: &str,
+    caret_utf16: u32,
+) {
+    ce_set_text(el, text);
+    ce_set_wiki_highlighted(el, text, Some(caret_utf16));
+    ce_set_caret_utf16(el, caret_utf16);
+}
+
+fn ce_refresh_wiki_highlighted(el: &web_sys::HtmlElement) {
+    let text = ce_text(el);
+    let (caret_utf16, _caret_end_utf16, _len) = ce_selection_utf16(el);
+    ce_set_wiki_highlighted(el, &text, Some(caret_utf16));
+    ce_set_caret_utf16(el, caret_utf16);
 }
 
 // ---- contenteditable structural helpers ----
@@ -1942,7 +1985,7 @@ pub fn OutlineEditor(
         let el = editing_ref.get();
         if let Some(el) = el {
             let he: web_sys::HtmlElement = el.unchecked_into();
-            ce_set_wiki_highlighted(&he, &editing_value.get_untracked());
+            ce_set_wiki_highlighted(&he, &editing_value.get_untracked(), None);
         }
     });
 
@@ -2812,7 +2855,8 @@ pub fn OutlineNode(
                                                             let navigate = navigate_for_tokens.clone();
                                                             match t {
                                                                 BidirectionalToken::Text(s) => {
-                                                                    view! { <span>{s}</span> }.into_any()
+                                                                    let html = render_basic_markdown_inline_html(&s);
+                                                                    view! { <span inner_html=html></span> }.into_any()
                                                                 }
                                                                 BidirectionalToken::Link(label) => {
                                                                     let title_raw = label;
@@ -3342,8 +3386,11 @@ pub fn OutlineNode(
                                                 ev.prevent_default();
                                                 op_applied_in_this_turn.set(true);
                                                 shift_enter_return_caret.set(None);
-                                                ce_set_text(&el, &next_state.text);
-                                                ce_set_caret_utf16(&el, next_state.caret_utf16);
+                                                ce_set_text_and_restore_caret_with_highlight(
+                                                    &el,
+                                                    &next_state.text,
+                                                    next_state.caret_utf16,
+                                                );
                                                 editing_value.set(next_state.text.clone());
 
                                                 let nav_id = nav_id_sv.get_value();
@@ -3383,8 +3430,11 @@ pub fn OutlineNode(
                                                 );
                                                 op_applied_in_this_turn.set(true);
                                                 shift_enter_return_caret.set(None);
-                                                ce_set_text(&el, &next_state.text);
-                                                ce_set_caret_utf16(&el, next_state.caret_utf16);
+                                                ce_set_text_and_restore_caret_with_highlight(
+                                                    &el,
+                                                    &next_state.text,
+                                                    next_state.caret_utf16,
+                                                );
                                                 editing_value.set(next_state.text.clone());
                                                 let nav_id = nav_id_sv.get_value();
                                                 let _ = sync_sv.try_with_value(|s| s.on_nav_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &nav_id, &next_state.text));
@@ -3492,6 +3542,7 @@ pub fn OutlineNode(
                                                 };
 
                                                 ce_set_caret_utf16(&el, col);
+                                                ce_refresh_wiki_highlighted(&el);
                                             }
                                             on:compositionstart=move |_ev: web_sys::CompositionEvent| {
                                                 is_composing.set(true);
@@ -3524,6 +3575,7 @@ pub fn OutlineNode(
                                                             &v,
                                                         )
                                                     });
+                                                    ce_refresh_wiki_highlighted(&el);
                                                 }
                                             }
                                             // on:blur only persists content; it does NOT decide whether we should exit
@@ -3638,6 +3690,7 @@ pub fn OutlineNode(
                                                     &nav_id_sv.get_value(),
                                                     caret_utf16,
                                                 );
+                                                ce_refresh_wiki_highlighted(&el);
                                             }
                                             on:mouseup=move |ev: web_sys::MouseEvent| {
                                                 let Some(el) = ev
@@ -3654,6 +3707,7 @@ pub fn OutlineNode(
                                                     &nav_id_sv.get_value(),
                                                     caret_utf16,
                                                 );
+                                                ce_refresh_wiki_highlighted(&el);
                                             }
                                             on:focusout=move |ev: web_sys::FocusEvent| {
                                                 if !should_exit_edit_on_focusout_related_target(
@@ -3739,7 +3793,17 @@ pub fn OutlineNode(
                                                                     next.push_str("]]");
                                                                     next.push_str(&v[caret_byte.min(v.len())..]);
 
-                                                                    ce_set_text(&input_el, &next);
+                                                                    ce_set_text_and_restore_caret_with_highlight(
+                                                                        &input_el,
+                                                                        &next,
+                                                                        start_utf16
+                                                                            + 2
+                                                                            + (chosen
+                                                                                .encode_utf16()
+                                                                                .count()
+                                                                                as u32)
+                                                                            + 2,
+                                                                    );
                                                                     editing_value.set(next.clone());
 
                                                                     // Persist immediately so refresh won't lose the completed token.
@@ -4467,9 +4531,14 @@ pub fn OutlineNode(
                                                         ev.prevent_default();
                                                         if let Some(el) = input() {
                                                             if next.text != current_state.text {
-                                                                ce_set_text(&el, &next.text);
+                                                                ce_set_text_and_restore_caret_with_highlight(
+                                                                    &el,
+                                                                    &next.text,
+                                                                    next.caret_utf16,
+                                                                );
+                                                            } else {
+                                                                ce_set_caret_utf16(&el, next.caret_utf16);
                                                             }
-                                                            ce_set_caret_utf16(&el, next.caret_utf16);
                                                             editing_value.set(next.text.clone());
                                                             shift_enter_return_caret
                                                                 .set(next.remembered_caret_utf16);
@@ -4514,9 +4583,14 @@ pub fn OutlineNode(
                                                         ev.prevent_default();
                                                         if let Some(el) = input() {
                                                             if next.text != state.text {
-                                                                ce_set_text(&el, &next.text);
+                                                                ce_set_text_and_restore_caret_with_highlight(
+                                                                    &el,
+                                                                    &next.text,
+                                                                    next.caret_utf16,
+                                                                );
+                                                            } else {
+                                                                ce_set_caret_utf16(&el, next.caret_utf16);
                                                             }
-                                                            ce_set_caret_utf16(&el, next.caret_utf16);
                                                             editing_value.set(next.text.clone());
                                                             shift_enter_return_caret
                                                                 .set(next.remembered_caret_utf16);
@@ -4739,7 +4813,14 @@ pub fn OutlineNode(
                                                                                                 next.push_str("]]");
                                                                                                 next.push_str(&v[caret_byte.min(v.len())..]);
 
-                                                                                                ce_set_text(&he, &next);
+                                                                                                ce_set_text_and_restore_caret_with_highlight(
+                                                                                                    &he,
+                                                                                                    &next,
+                                                                                                    start_utf16
+                                                                                                        + 2
+                                                                                                        + (title_for_insert.encode_utf16().count() as u32)
+                                                                                                        + 2,
+                                                                                                );
                                                                                                 editing_value.set(next.clone());
 
                                                                                                 let caret_after = start_utf16
