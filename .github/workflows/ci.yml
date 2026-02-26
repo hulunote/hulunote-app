@@ -33,15 +33,14 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: npm
+          cache-dependency-path: package-lock.json
 
       - name: Install Node dependencies
         run: npm ci
 
       - name: Check Prettier formatting
-        run: git ls-files -z '*.html' '*.ts' '*.tsx' '*.js' '*.jsx' '*.json' | xargs -0 -r npx prettier --check
-
-      - name: Install Tailwind CSS
-        run: npm install -g tailwindcss
+        run: npm run format:check
 
       - name: Build with Trunk
         run: trunk build --locked
@@ -49,20 +48,52 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Run tests (host)
-        run: cargo test --locked
-
-      - name: Install wasm-bindgen-cli
-        run: cargo install wasm-bindgen-cli
-
-      - name: Run tests
-        env:
-          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
-          WASM_BINDGEN_TEST_TIMEOUT: '120'
-        run: cargo test --locked --target wasm32-unknown-unknown
-
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/
+
+  test-host:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+
+      - name: Run tests (host)
+        run: cargo test --locked
+
+  test-wasm:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+
+      - name: Install wasm-bindgen-cli
+        run: cargo install wasm-bindgen-cli --locked
+
+      - name: Run tests (wasm32)
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+          WASM_BINDGEN_TEST_TIMEOUT: '120'
+        run: cargo test --locked --target wasm32-unknown-unknown

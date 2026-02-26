@@ -86,6 +86,7 @@ Avoid interactive git flows that can hang in non-TTY environments.
 
 - Prefer non-interactive commands (`git add <paths>`, normal commits/merges).
 - Avoid `git add -p` edit-hunk flows and interactive rebase unless strictly necessary.
+- Do not bypass git hooks; `git commit --no-verify` is prohibited.
 
 ## Lessons Learned
 
