@@ -566,6 +566,36 @@ mod tests {
     }
 
     #[test]
+    fn reduce_replace_range_deletes_selected_blank_multiline_span() {
+        let s = EditorState::new("head\n\n\ntail".to_string(), 5);
+        let n = reduce_editor_state(
+            &s,
+            EditorIntent::ReplaceRange {
+                start_utf16: 5,
+                end_utf16: 7,
+                text: String::new(),
+            },
+        );
+        assert_eq!(n.text, "head\ntail");
+        assert_eq!(n.caret_utf16, 5);
+    }
+
+    #[test]
+    fn reduce_replace_range_deletes_selected_nonempty_multiline_span() {
+        let s = EditorState::new("ab\ncd\nef".to_string(), 2);
+        let n = reduce_editor_state(
+            &s,
+            EditorIntent::ReplaceRange {
+                start_utf16: 1,
+                end_utf16: 6,
+                text: String::new(),
+            },
+        );
+        assert_eq!(n.text, "aef");
+        assert_eq!(n.caret_utf16, 1);
+    }
+
+    #[test]
     fn reduce_insert_text_inserts_at_caret() {
         let s = EditorState::new("ab".to_string(), 1);
         let n = reduce_editor_state(&s, EditorIntent::InsertText("X".to_string()));

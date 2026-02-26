@@ -1,7 +1,8 @@
 #![cfg(target_arch = "wasm32")]
 
 use hulunote_app::{
-    test_caret_utf16, test_mount_outline_editor, test_set_caret_utf16, test_view_text,
+    test_caret_utf16, test_mount_outline_editor, test_set_caret_utf16, test_set_selection_utf16,
+    test_view_text,
 };
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::wasm_bindgen_test;
@@ -187,6 +188,30 @@ async fn enter_in_multiline_nav_inserts_soft_break_dom_integration() {
         dispatch_keydown(&el, "Enter", false);
         assert_eq!(view_text(&el), "line1\nline2\n");
         assert_eq!(test_caret_utf16(&el), 12);
+    })
+    .await;
+}
+
+#[wasm_bindgen_test(async)]
+async fn backspace_deletes_selected_blank_multiline_range_once_dom_integration() {
+    with_editor("head\n\n\ntail", |el| {
+        // Select the two blank lines ("\n\n") between head and tail.
+        test_set_selection_utf16(&el, 5, 7);
+        dispatch_keydown(&el, "Backspace", false);
+        assert_eq!(view_text(&el), "head\ntail");
+        assert_eq!(test_caret_utf16(&el), 5);
+    })
+    .await;
+}
+
+#[wasm_bindgen_test(async)]
+async fn delete_deletes_selected_blank_multiline_range_once_dom_integration() {
+    with_editor("head\n\n\ntail", |el| {
+        // Select the two blank lines ("\n\n") between head and tail.
+        test_set_selection_utf16(&el, 5, 7);
+        dispatch_keydown(&el, "Delete", false);
+        assert_eq!(view_text(&el), "head\ntail");
+        assert_eq!(test_caret_utf16(&el), 5);
     })
     .await;
 }

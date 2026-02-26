@@ -115,6 +115,49 @@ async function dragRowHandleAfterRow(
   await handle.dispatchEvent("dragend", { dataTransfer })
 }
 
+async function dragSelectInsideEditor(
+  page: Page,
+  editor: Locator,
+  startLine: number,
+  endLine: number,
+): Promise<void> {
+  const box = await editor.boundingBox()
+  expect(box).not.toBeNull()
+  const lineHeight = 22
+  const paddingTop = 8
+  const x = Math.max(8, Math.floor((box?.x ?? 0) + 18))
+  const yStart = Math.max(4, Math.floor((box?.y ?? 0) + paddingTop + startLine * lineHeight))
+  const yEnd = Math.max(4, Math.floor((box?.y ?? 0) + paddingTop + endLine * lineHeight))
+
+  await page.mouse.move(x, yStart)
+  await page.mouse.down()
+  await page.mouse.move(x, yEnd, { steps: 8 })
+  await page.mouse.up()
+}
+
+async function editorSelectionState(editor: Locator): Promise<{
+  rangeCount: number
+  isCollapsed: boolean
+  inEditor: boolean
+  textLength: number
+}> {
+  return await editor.evaluate(el => {
+    const sel = window.getSelection()
+    if (!sel || sel.rangeCount === 0) {
+      return { rangeCount: 0, isCollapsed: true, inEditor: false, textLength: 0 }
+    }
+    const range = sel.getRangeAt(0)
+    const container = range.commonAncestorContainer
+    const inEditor = el.contains(container)
+    return {
+      rangeCount: sel.rangeCount,
+      isCollapsed: sel.isCollapsed,
+      inEditor,
+      textLength: sel.toString().length,
+    }
+  })
+}
+
 test("outline editor: can edit first row", async ({ outlineDb, page }, testInfo) => {
   const token = `pw-edit-${testInfo.project.name}`
   await openIsolatedNote(page, outlineDb)
@@ -297,6 +340,102 @@ test("outline editor: click row places caret at clicked position", async ({
   const rightIdx = textNow.indexOf(markerRight)
   expect(leftIdx).toBeGreaterThanOrEqual(0)
   expect(rightIdx).toBeGreaterThan(leftIdx)
+
+  await deleteCurrentNote(page)
+})
+
+test("selection: blank multi-line range persists after mouseup", async ({
+  outlineDb,
+  page,
+}, testInfo) => {
+  await openIsolatedNote(page, outlineDb)
+  await setRowText(page, 0, `sel-A-${testInfo.project.name}\n\n\nsel-B-${testInfo.project.name}`)
+  const editor = rowEditorLocator(page, 0)
+  await expect(editor).toBeVisible()
+  await editor.click({ position: { x: 10, y: 8 } })
+
+  await dragSelectInsideEditor(page, editor, 1, 3)
+  const s1 = await editorSelectionState(editor)
+  expect(s1.rangeCount).toBe(1)
+  expect(s1.inEditor).toBeTruthy()
+  expect(s1.isCollapsed).toBeFalsy()
+
+  await page.waitForTimeout(50)
+  const s2 = await editorSelectionState(editor)
+  expect(s2.rangeCount).toBe(1)
+  expect(s2.inEditor).toBeTruthy()
+  expect(s2.isCollapsed).toBeFalsy()
+
+  await deleteCurrentNote(page)
+})
+
+test("selection: non-empty multi-line range persists after mouseup", async ({
+  outlineDb,
+  page,
+}, testInfo) => {
+  await openIsolatedNote(page, outlineDb)
+  await setRowText(
+    page,
+    0,
+    `sel-1-${testInfo.project.name}\nsel-2-${testInfo.project.name}\nsel-3-${testInfo.project.name}`,
+  )
+  const editor = rowEditorLocator(page, 0)
+  await expect(editor).toBeVisible()
+  await editor.click({ position: { x: 10, y: 8 } })
+
+  await dragSelectInsideEditor(page, editor, 0, 2)
+  const s1 = await editorSelectionState(editor)
+  expect(s1.rangeCount).toBe(1)
+  expect(s1.inEditor).toBeTruthy()
+  expect(s1.isCollapsed).toBeFalsy()
+  expect(s1.textLength).toBeGreaterThan(0)
+
+  await page.waitForTimeout(50)
+  const s2 = await editorSelectionState(editor)
+  expect(s2.rangeCount).toBe(1)
+  expect(s2.inEditor).toBeTruthy()
+  expect(s2.isCollapsed).toBeFalsy()
+  expect(s2.textLength).toBeGreaterThan(0)
+
+  await deleteCurrentNote(page)
+})
+
+test("selection: backspace/delete removes selected blank multi-line range in one action", async ({
+  outlineDb,
+  page,
+}, testInfo) => {
+  await openIsolatedNote(page, outlineDb)
+  const before = `head-${testInfo.project.name}\n\n\ntail-${testInfo.project.name}`
+  await setRowText(page, 0, before)
+  const editor = rowEditorLocator(page, 0)
+  await expect(editor).toBeVisible()
+  await editor.click({ position: { x: 10, y: 8 } })
+  const beforeBreakCount = before.split("\n").length - 1
+
+  // Select only blank lines (between head and tail) and delete once.
+  await dragSelectInsideEditor(page, editor, 1, 3)
+  const selected = await editorSelectionState(editor)
+  expect(selected.isCollapsed).toBeFalsy()
+  await page.keyboard.press("Backspace")
+  await expect
+    .poll(async () => {
+      const text = (await editor.textContent()) || ""
+      return text.split("\n").length - 1
+    })
+    .toBeLessThanOrEqual(beforeBreakCount - 2)
+
+  // Re-create the blank range and verify Delete key has the same one-shot behavior.
+  await editor.fill(before)
+  await dragSelectInsideEditor(page, editor, 1, 3)
+  const selected2 = await editorSelectionState(editor)
+  expect(selected2.isCollapsed).toBeFalsy()
+  await page.keyboard.press("Delete")
+  await expect
+    .poll(async () => {
+      const text = (await editor.textContent()) || ""
+      return text.split("\n").length - 1
+    })
+    .toBeLessThanOrEqual(beforeBreakCount - 2)
 
   await deleteCurrentNote(page)
 })

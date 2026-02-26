@@ -663,52 +663,35 @@ fn utf16_pos_for_line_col(text: &str, target_line_idx: u32, target_col: u32) -> 
     text.encode_utf16().count() as u32
 }
 
-fn ce_set_caret_utf16(el: &web_sys::HtmlElement, pos_utf16: u32) {
-    // The editor node may already be unmounted when this runs (e.g. delayed focus/selection
-    // restoration). Avoid creating a Range from detached nodes.
-    if !el.is_connected() {
-        return;
-    }
-    let _ = el.focus();
-
-    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
-        return;
-    };
-
-    let txt = ce_view_text(el);
-    let len = txt.encode_utf16().count() as u32;
-    let target = pos_utf16.min(len);
-
-    let Ok(range) = doc.create_range() else {
-        return;
-    };
-
-    // Walk text nodes and treat <br> as a single newline char.
-    fn child_index(parent: &web_sys::Node, child: &web_sys::Node) -> Option<u32> {
-        let kids = parent.child_nodes();
-        for i in 0..kids.length() {
-            if let Some(n) = kids.get(i) {
-                if n == *child {
-                    return Some(i);
-                }
+fn ce_child_index(parent: &web_sys::Node, child: &web_sys::Node) -> Option<u32> {
+    let kids = parent.child_nodes();
+    for i in 0..kids.length() {
+        if let Some(n) = kids.get(i) {
+            if n == *child {
+                return Some(i);
             }
         }
-        None
     }
+    None
+}
 
-    fn is_caret_anchor(node: &web_sys::Node) -> bool {
-        node.dyn_ref::<web_sys::Element>()
-            .and_then(|e| e.get_attribute(CARET_ANCHOR_ATTR))
-            .as_deref()
-            == Some(CARET_ANCHOR_VALUE)
-    }
+fn ce_is_caret_anchor(node: &web_sys::Node) -> bool {
+    node.dyn_ref::<web_sys::Element>()
+        .and_then(|e| e.get_attribute(CARET_ANCHOR_ATTR))
+        .as_deref()
+        == Some(CARET_ANCHOR_VALUE)
+}
 
-    fn parent_before_anchor(node: &web_sys::Node) -> Option<(web_sys::Node, u32)> {
-        let parent = node.parent_node()?;
-        let idx = child_index(&parent, node)?;
-        Some((parent, idx))
-    }
+fn ce_parent_before_anchor(node: &web_sys::Node) -> Option<(web_sys::Node, u32)> {
+    let parent = node.parent_node()?;
+    let idx = ce_child_index(&parent, node)?;
+    Some((parent, idx))
+}
 
+fn ce_resolve_dom_point_for_utf16(
+    el: &web_sys::HtmlElement,
+    pos_utf16: u32,
+) -> Option<(web_sys::Node, u32)> {
     fn walk(node: &web_sys::Node, remaining: &mut i32, out: &mut Option<(web_sys::Node, u32)>) {
         if out.is_some() {
             return;
@@ -726,9 +709,9 @@ fn ce_set_caret_utf16(el: &web_sys::HtmlElement, pos_utf16: u32) {
         }
 
         if let Some(el) = node.dyn_ref::<web_sys::Element>() {
-            if is_caret_anchor(node) {
+            if ce_is_caret_anchor(node) {
                 if *remaining <= 0 {
-                    if let Some(pos) = parent_before_anchor(node) {
+                    if let Some(pos) = ce_parent_before_anchor(node) {
                         *out = Some(pos);
                     } else {
                         *out = Some((node.clone(), 0));
@@ -740,8 +723,8 @@ fn ce_set_caret_utf16(el: &web_sys::HtmlElement, pos_utf16: u32) {
             if el.tag_name().eq_ignore_ascii_case("br") {
                 if *remaining <= 1 {
                     if let Some(next) = node.next_sibling() {
-                        if is_caret_anchor(&next) {
-                            if let Some(pos) = parent_before_anchor(&next) {
+                        if ce_is_caret_anchor(&next) {
+                            if let Some(pos) = ce_parent_before_anchor(&next) {
                                 *out = Some(pos);
                             } else {
                                 *out = Some((next, 0));
@@ -750,7 +733,7 @@ fn ce_set_caret_utf16(el: &web_sys::HtmlElement, pos_utf16: u32) {
                         }
                     }
                     if let Some(parent) = node.parent_node() {
-                        if let Some(idx) = child_index(&parent, node) {
+                        if let Some(idx) = ce_child_index(&parent, node) {
                             *out = Some((parent, idx + 1));
                             return;
                         }
@@ -774,34 +757,57 @@ fn ce_set_caret_utf16(el: &web_sys::HtmlElement, pos_utf16: u32) {
         }
     }
 
-    let mut remaining = target as i32;
-    let mut found: Option<(web_sys::Node, u32)> = None;
+    let mut remaining = pos_utf16 as i32;
+    let mut out: Option<(web_sys::Node, u32)> = None;
     let root_node: web_sys::Node = el.clone().unchecked_into();
-    walk(&root_node, &mut remaining, &mut found);
+    walk(&root_node, &mut remaining, &mut out);
+    out
+}
 
-    if let Some((node, off)) = found {
-        if off == u32::MAX {
-            let _ = range.set_start_after(&node);
-        } else {
-            let _ = range.set_start(&node, off);
-        }
-        range.collapse_with_to_start(true);
-
-        if let Ok(Some(sel)) = doc.get_selection() {
-            let _ = sel.remove_all_ranges();
-            // `addRange()` throws if the range references nodes that are no longer in the document.
-            let _ = sel.add_range(&range);
-        }
+fn ce_set_selection_utf16_internal(el: &web_sys::HtmlElement, start_utf16: u32, end_utf16: u32) {
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
         return;
+    };
+
+    let txt = ce_view_text(el);
+    let len = txt.encode_utf16().count() as u32;
+    let start = start_utf16.min(len);
+    let end = end_utf16.min(len);
+
+    let root_node: web_sys::Node = el.clone().unchecked_into();
+    let Ok(range) = doc.create_range() else {
+        return;
+    };
+
+    let start_point = ce_resolve_dom_point_for_utf16(el, start).unwrap_or((root_node.clone(), 0));
+    let end_point = ce_resolve_dom_point_for_utf16(el, end).unwrap_or((root_node.clone(), 0));
+
+    if start_point.1 == u32::MAX {
+        let _ = range.set_start_after(&start_point.0);
+    } else {
+        let _ = range.set_start(&start_point.0, start_point.1);
     }
 
-    // Fallback for empty/anchor-only DOM shapes.
-    let _ = range.set_start(&root_node, 0);
-    range.collapse_with_to_start(true);
+    if end_point.1 == u32::MAX {
+        let _ = range.set_end_after(&end_point.0);
+    } else {
+        let _ = range.set_end(&end_point.0, end_point.1);
+    }
+
     if let Ok(Some(sel)) = doc.get_selection() {
         let _ = sel.remove_all_ranges();
         let _ = sel.add_range(&range);
     }
+}
+
+fn ce_set_caret_utf16(el: &web_sys::HtmlElement, pos_utf16: u32) {
+    // The editor node may already be unmounted when this runs (e.g. delayed focus/selection
+    // restoration). Avoid creating a Range from detached nodes.
+    if !el.is_connected() {
+        return;
+    }
+    let _ = el.focus();
+    ce_set_selection_utf16_internal(el, pos_utf16, pos_utf16);
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -878,6 +884,16 @@ pub fn test_mount_outline_editor(root: &web_sys::HtmlElement, initial_text: &str
 #[doc(hidden)]
 pub fn test_set_caret_utf16(el: &web_sys::HtmlElement, pos_utf16: u32) {
     ce_set_caret_utf16(el, pos_utf16);
+}
+
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub fn test_set_selection_utf16(el: &web_sys::HtmlElement, start_utf16: u32, end_utf16: u32) {
+    if !el.is_connected() {
+        return;
+    }
+    let _ = el.focus();
+    ce_set_selection_utf16_internal(el, start_utf16, end_utf16);
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -3682,7 +3698,8 @@ pub fn OutlineNode(
                                                 else {
                                                     return;
                                                 };
-                                                let (caret_utf16, _caret_end_utf16, _len_before) = ce_selection_utf16(&el);
+                                                let (caret_utf16, caret_end_utf16, _len_before) =
+                                                    ce_selection_utf16(&el);
                                                 schedule_note_cursor_save(
                                                     cursor_save_timer_id,
                                                     &db_id_sv.get_value(),
@@ -3690,7 +3707,11 @@ pub fn OutlineNode(
                                                     &nav_id_sv.get_value(),
                                                     caret_utf16,
                                                 );
-                                                ce_refresh_wiki_highlighted(&el);
+                                                // Re-highlighting rebuilds DOM and restores a collapsed caret.
+                                                // Skip it when a range selection exists to preserve user selection.
+                                                if caret_utf16 == caret_end_utf16 {
+                                                    ce_refresh_wiki_highlighted(&el);
+                                                }
                                             }
                                             on:mouseup=move |ev: web_sys::MouseEvent| {
                                                 let Some(el) = ev
@@ -3699,7 +3720,8 @@ pub fn OutlineNode(
                                                 else {
                                                     return;
                                                 };
-                                                let (caret_utf16, _caret_end_utf16, _len_before) = ce_selection_utf16(&el);
+                                                let (caret_utf16, caret_end_utf16, _len_before) =
+                                                    ce_selection_utf16(&el);
                                                 schedule_note_cursor_save(
                                                     cursor_save_timer_id,
                                                     &db_id_sv.get_value(),
@@ -3707,7 +3729,9 @@ pub fn OutlineNode(
                                                     &nav_id_sv.get_value(),
                                                     caret_utf16,
                                                 );
-                                                ce_refresh_wiki_highlighted(&el);
+                                                if caret_utf16 == caret_end_utf16 {
+                                                    ce_refresh_wiki_highlighted(&el);
+                                                }
                                             }
                                             on:focusout=move |ev: web_sys::FocusEvent| {
                                                 if !should_exit_edit_on_focusout_related_target(
@@ -4389,9 +4413,17 @@ pub fn OutlineNode(
                                                     .unwrap_or((0, has_any_text_content(&v_now)));
 
                                                 let state = outline_delete_state(has_any_text, semantic_br_count);
+                                                let has_range_selection = input()
+                                                    .as_ref()
+                                                    .map(|el| {
+                                                        let (start, end, _len) = ce_selection_utf16(el);
+                                                        start != end
+                                                    })
+                                                    .unwrap_or(false);
 
                                                 if (key == "Backspace" || key == "Delete")
                                                     && state == OutlineDeleteState::OnlySoftBreaks
+                                                    && !has_range_selection
                                                 {
                                                     ev.prevent_default();
 
@@ -4500,17 +4532,17 @@ pub fn OutlineNode(
                                                 }
 
                                                 if key == "Backspace" || key == "Delete" {
-                                                    let (current_text, caret_start) = input()
+                                                    let (current_text, caret_start, caret_end) = input()
                                                         .as_ref()
                                                         .map(|el| {
                                                             let txt = ce_view_text(el);
-                                                            let (start, _end, _len) = ce_selection_utf16(el);
-                                                            (txt, start)
+                                                            let (start, end, _len) = ce_selection_utf16(el);
+                                                            (txt, start, end)
                                                         })
                                                         .unwrap_or_else(|| {
                                                             let txt = editing_value.get_untracked();
                                                             let pos = txt.encode_utf16().count() as u32;
-                                                            (txt, pos)
+                                                            (txt, pos, pos)
                                                         });
 
                                                     let current_state = EditorState {
@@ -4519,12 +4551,26 @@ pub fn OutlineNode(
                                                         remembered_caret_utf16: shift_enter_return_caret
                                                             .get_untracked(),
                                                     };
-                                                    let intent = if key == "Backspace" {
-                                                        EditorIntent::Backspace
+                                                    let next = if caret_start != caret_end {
+                                                        reduce_editor_state(
+                                                            &current_state,
+                                                            EditorIntent::ReplaceRange {
+                                                                start_utf16: caret_start,
+                                                                end_utf16: caret_end,
+                                                                text: String::new(),
+                                                            },
+                                                        )
+                                                    } else if key == "Backspace" {
+                                                        reduce_editor_state(
+                                                            &current_state,
+                                                            EditorIntent::Backspace,
+                                                        )
                                                     } else {
-                                                        EditorIntent::Delete
+                                                        reduce_editor_state(
+                                                            &current_state,
+                                                            EditorIntent::Delete,
+                                                        )
                                                     };
-                                                    let next = reduce_editor_state(&current_state, intent);
                                                     if next.text != current_state.text
                                                         || next.caret_utf16 != current_state.caret_utf16
                                                     {

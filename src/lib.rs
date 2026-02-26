@@ -14,7 +14,8 @@ use leptos::prelude::*;
 
 #[cfg(target_arch = "wasm32")]
 pub use crate::editor::{
-    test_caret_utf16, test_mount_outline_editor, test_set_caret_utf16, test_view_text,
+    test_caret_utf16, test_mount_outline_editor, test_set_caret_utf16, test_set_selection_utf16,
+    test_view_text,
 };
 
 // Needed for `#[wasm_bindgen(start)]` on the wasm entrypoint.
