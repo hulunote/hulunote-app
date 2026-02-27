@@ -1,19 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-
-staged_prettier_files=()
-while IFS= read -r file; do
-  case "$file" in
-    *.html|*.ts|*.tsx|*.js|*.jsx|*.json|*.css)
-      staged_prettier_files+=("$file")
-      ;;
-  esac
-done < <(git diff --cached --name-only --diff-filter=ACMR)
-
-if [ ${#staged_prettier_files[@]} -gt 0 ]; then
-  pnpm exec prettier --check "${staged_prettier_files[@]}"
-fi
-
+pnpm exec prettier --check
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
