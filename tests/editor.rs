@@ -267,6 +267,8 @@ async fn ime_composition_end_advances_caret() {
 #[wasm_bindgen_test(async)]
 async fn markdown_click_hit_test_does_not_jump_to_row_start() {
     with_editor("a **bold** z", |el| {
+        // Rebuild controlled visual rows in case the harness set raw innerText.
+        dispatch_input(&el);
         test_set_caret_utf16(&el, 0);
         let rect = el.get_bounding_client_rect();
         let x = (rect.right() - 2.0).round() as i32;
