@@ -14,16 +14,16 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use wasm_bindgen::JsCast;
 
-/// Global, local-first sync controller for note nav drafts.
+/// Global local-first sync controller for note/title/nav drafts.
 ///
-/// Responsibilities:
-/// - local draft writes (localStorage)
-/// - per-nav debounce autosave
-/// - retry queue (retry_count/next_retry_ms)
-/// - best-effort pagehide flush (beacon/keepalive-friendly)
+/// What this controller owns:
+/// - local draft writes
+/// - debounce autosave scheduling
+/// - retry/backoff driven remote sync
+/// - best-effort `pagehide` flush
 ///
-/// Non-responsibilities:
-/// - outline UI state (editing id, focus, etc.)
+/// What it does not own:
+/// - outline interaction state (selection/focus/edit-mode rendering)
 #[derive(Clone)]
 pub(crate) struct NoteSyncController {
     app_state: AppContext,
@@ -76,21 +76,33 @@ impl NoteSyncController {
             .filter(|title| !title.trim().is_empty())
     }
 
+    /// Returns whether backend connectivity is currently considered healthy.
+    ///
+    /// This is an optimistic runtime signal used to gate request attempts.
     pub fn is_backend_online(&self) -> bool {
         self.backend_online.get_untracked()
     }
 
     #[allow(dead_code)]
+    /// Returns the last captured backend error message, if any.
+    ///
+    /// The value is cleared by `mark_backend_online`.
     pub fn last_backend_error(&self) -> Option<String> {
         self.last_backend_error.get_untracked()
     }
 
+    /// Marks backend as reachable and clears offline probe/error state.
+    ///
+    /// Intended for successful API paths within sync worker flows.
     pub(crate) fn mark_backend_online(&self) {
         self.backend_online.set(true);
         self.last_backend_error.set(None);
         self.offline_next_probe_ms.set(0);
     }
 
+    /// Marks backend as offline for network-layer API errors.
+    ///
+    /// Non-network API errors are not treated as connectivity failures.
     pub(crate) fn mark_backend_offline_api(&self, e: &crate::api::ApiError) {
         if e.kind == crate::api::ApiErrorKind::Network {
             self.backend_online.set(false);
@@ -112,6 +124,9 @@ impl NoteSyncController {
         self.offline_next_probe_ms.set(now_ms + 15_000);
     }
 
+    /// Creates the sync controller and starts global listeners/background retry worker.
+    ///
+    /// The controller is expected to live for app lifetime.
     pub fn new(app_state: AppContext) -> Self {
         let backend_online = RwSignal::new(true);
         let last_backend_error = RwSignal::new(None);
@@ -167,7 +182,9 @@ impl NoteSyncController {
         }
     }
 
-    /// Called by NotePage (tracked Effect) when route changes.
+    /// Updates current route scope used by title and pagehide sync flows.
+    ///
+    /// Call this from route-driven effects (for example NotePage).
     pub fn set_route(&self, db_id: String, note_id: String) {
         self.current_db_id.set(db_id);
         self.current_note_id.set(note_id);
@@ -245,17 +262,28 @@ impl NoteSyncController {
         Some(nav_id)
     }
 
-    /// Called by OutlineEditor when editing nav changes.
+    /// Records which nav is currently being edited.
+    ///
+    /// Used by pagehide flush to prioritize the active nav draft.
     pub fn set_editing_nav(&self, nav_id: Option<String>) {
         self.current_editing_nav_id.set(nav_id);
     }
 
-    /// Called by editor IME handlers.
+    /// Updates IME composing state for sync deferral heuristics.
+    ///
+    /// While composing, content sync may be deferred to avoid partial commits.
     pub fn set_ime_composing(&self, composing: bool) {
         self.ime_composing.set(composing);
     }
 
-    /// Called by OutlineEditor when db/note ids are known explicitly (preferred).
+    /// Preferred entry for nav content updates when caller already has explicit
+    /// `db_id` + `note_id` (for example, OutlineEditor handlers).
+    ///
+    /// Behavior:
+    /// - writes local-first content draft
+    /// - schedules debounced remote sync
+    ///
+    /// No-op when ids are empty or note title cannot be resolved.
     pub fn on_nav_changed_for_scope(
         &self,
         db_id: &str,
@@ -281,7 +309,14 @@ impl NoteSyncController {
         self.schedule_autosave(format!("nav:{db_id}:{note_id}:{nav_id}"));
     }
 
-    /// Called by OutlineEditor when db/note ids are known explicitly (preferred).
+    /// Preferred entry for nav metadata updates when caller already has explicit
+    /// `db_id` + `note_id` (for example, OutlineEditor handlers).
+    ///
+    /// Behavior:
+    /// - writes local-first metadata draft (`parid/order/display/delete/properties`)
+    /// - schedules debounced remote sync
+    ///
+    /// No-op when ids are empty or note title cannot be resolved.
     pub fn on_nav_meta_changed_for_scope(
         &self,
         db_id: &str,
@@ -306,7 +341,13 @@ impl NoteSyncController {
         self.schedule_autosave(format!("meta:{db_id}:{note_id}:{}", nav.id));
     }
 
-    /// Called by NotePage when note title changes.
+    /// Preferred entry for note title updates in current route scope.
+    ///
+    /// Behavior:
+    /// - writes local-first title draft
+    /// - schedules debounced remote sync
+    ///
+    /// No-op when current route scope is unavailable.
     pub fn on_title_changed(&self, title: &str) {
         let Some((db_id, note_id)) = self.db_note_untracked() else {
             return;
