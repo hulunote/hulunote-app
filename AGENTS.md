@@ -88,11 +88,6 @@ Avoid interactive git flows that can hang in non-TTY environments.
 - Avoid `git add -p` edit-hunk flows and interactive rebase unless strictly necessary.
 - Do not bypass git hooks; `git commit --no-verify` is prohibited.
 
-## Lessons Learned
-
-- Keep this section for cross-task engineering pitfalls only.
-- User-visible behavior definitions (shortcuts/navigation semantics) belong in `docs/USER_MANUAL.md`.
-
 ## Testing Policy
 
 - The goal of testing is to detect potential business-logic bugs, not to make test cases pass by masking real issues.

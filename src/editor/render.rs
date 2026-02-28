@@ -100,13 +100,17 @@ pub fn render_basic_markdown_inline_html_for_editing(s: &str, caret_byte: Option
                     if active {
                         push_escaped(&mut out, &s[i..end]);
                     } else {
-                        out.push_str("<span class=\"text-[0px] leading-none\">`</span>");
+                        out.push_str(
+                            "<span data-md-marker=\"1\" contenteditable=\"false\" aria-hidden=\"true\" class=\"text-[0px] leading-none select-none pointer-events-none\">`</span>",
+                        );
                         out.push_str(
                             "<code class=\"rounded bg-muted px-1 py-0.5 font-mono text-[0.9em]\">",
                         );
                         push_escaped(&mut out, content);
                         out.push_str("</code>");
-                        out.push_str("<span class=\"text-[0px] leading-none\">`</span>");
+                        out.push_str(
+                            "<span data-md-marker=\"1\" contenteditable=\"false\" aria-hidden=\"true\" class=\"text-[0px] leading-none select-none pointer-events-none\">`</span>",
+                        );
                     }
                     i = end;
                     continue;
@@ -126,11 +130,15 @@ pub fn render_basic_markdown_inline_html_for_editing(s: &str, caret_byte: Option
                     if active {
                         push_escaped(&mut out, &s[i..end]);
                     } else {
-                        out.push_str("<span class=\"text-[0px] leading-none\">**</span>");
+                        out.push_str(
+                            "<span data-md-marker=\"1\" contenteditable=\"false\" aria-hidden=\"true\" class=\"text-[0px] leading-none select-none pointer-events-none\">**</span>",
+                        );
                         out.push_str("<strong>");
                         push_escaped(&mut out, content);
                         out.push_str("</strong>");
-                        out.push_str("<span class=\"text-[0px] leading-none\">**</span>");
+                        out.push_str(
+                            "<span data-md-marker=\"1\" contenteditable=\"false\" aria-hidden=\"true\" class=\"text-[0px] leading-none select-none pointer-events-none\">**</span>",
+                        );
                     }
                     i = end;
                     continue;
@@ -150,11 +158,15 @@ pub fn render_basic_markdown_inline_html_for_editing(s: &str, caret_byte: Option
                     if active {
                         push_escaped(&mut out, &s[i..end]);
                     } else {
-                        out.push_str("<span class=\"text-[0px] leading-none\">*</span>");
+                        out.push_str(
+                            "<span data-md-marker=\"1\" contenteditable=\"false\" aria-hidden=\"true\" class=\"text-[0px] leading-none select-none pointer-events-none\">*</span>",
+                        );
                         out.push_str("<em>");
                         push_escaped(&mut out, content);
                         out.push_str("</em>");
-                        out.push_str("<span class=\"text-[0px] leading-none\">*</span>");
+                        out.push_str(
+                            "<span data-md-marker=\"1\" contenteditable=\"false\" aria-hidden=\"true\" class=\"text-[0px] leading-none select-none pointer-events-none\">*</span>",
+                        );
                     }
                     i = end;
                     continue;
@@ -220,7 +232,7 @@ mod tests {
         let html = render_basic_markdown_inline_html_for_editing("a **xx** b", Some(0));
         assert_eq!(
             html,
-            "a <span class=\"text-[0px] leading-none\">**</span><strong>xx</strong><span class=\"text-[0px] leading-none\">**</span> b"
+            "a <span data-md-marker=\"1\" contenteditable=\"false\" aria-hidden=\"true\" class=\"text-[0px] leading-none select-none pointer-events-none\">**</span><strong>xx</strong><span data-md-marker=\"1\" contenteditable=\"false\" aria-hidden=\"true\" class=\"text-[0px] leading-none select-none pointer-events-none\">**</span> b"
         );
     }
 

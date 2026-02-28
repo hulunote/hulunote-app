@@ -1,4 +1,4 @@
-# Phase 9 — Rich Text Editor (contenteditable) SPEC
+# Phase 9 — Rich Text Editor SPEC
 
 Status: Draft (approved direction, phased rollout)
 
@@ -6,7 +6,7 @@ Status: Draft (approved direction, phased rollout)
 
 ### Goals
 - Provide a true rich-text editing experience per outline node (Nav), similar to modern block editors.
-- Use `contenteditable` for the editing surface.
+- Use a browser editing surface for text input/selection, with editor-controlled layout.
 - Preserve outliner semantics:
   - `Enter` creates a new block (new Nav)
   - `Tab` / `Shift+Tab` indent / outdent
@@ -30,7 +30,7 @@ Status: Draft (approved direction, phased rollout)
 
 - **Phase 9A (current baseline)**:
   - `Nav.content` remains the editing/rendering source.
-  - Inline formatting is Markdown-token based (`**`, `*`, `` ` ``) with contenteditable rendering.
+  - Inline formatting is Markdown-token based (`**`, `*`, `` ` ``) with editor-controlled rendering.
   - No `properties.rt.doc` persistence yet.
 - **Phase 9B (target architecture)**:
   - Introduce `properties.rt.doc` as rich-text source-of-truth.
@@ -98,16 +98,44 @@ Notes:
 - If a node has no `rt.doc`, render plain `Nav.content` as today.
 
 ### 2.2 Edit mode
-- Render the same structure into a `contenteditable` surface.
+- Render the same structure into the editable surface.
 - Do **not** rely on `document.execCommand` (deprecated / inconsistent).
 
 ### 2.3 Current implementation baseline (Phase 9A)
 
 - Read mode renders inline markdown and wiki-links from `Nav.content`.
-- Edit mode uses `contenteditable`; markdown tokens are rendered when caret is outside a token range, and shown raw when caret is inside that range.
+- Edit mode uses custom visual-line layout (`div/span` rows), not browser native auto-wrap.
+- Markdown token rendering in edit mode is token-range based:
+  - caret outside token range: render as formatted (`<strong>/<em>/<code>`)
+  - caret inside token range (inclusive boundaries): show raw token text
 - Persistence still writes plain text to `Nav.content`.
 
-## 3. Editing core (contenteditable)
+### 2.4 Editing architecture routes (reference)
+
+Common Web editor routes:
+
+1. Native-editing route (`contenteditable`-first)
+   - Browser handles most DOM editing behavior.
+   - Editor layer adds normalization/patching on top.
+   - Pros: fast bootstrap, strong IME baseline.
+   - Cons: browser behavior variance and harder deterministic control.
+
+2. Fully controlled route (hidden input/textarea + custom render tree)
+   - Input is captured from a hidden control; visible DOM is fully editor-owned.
+   - Pros: strongest deterministic behavior, cleaner model/DOM boundary.
+   - Cons: higher implementation cost for selection/accessibility/IME details.
+
+3. Hybrid route (input from browser surface + controlled layout/model)
+   - Browser surface is used for input/selection interoperability.
+   - Line/block layout, token rendering, and semantic behaviors are editor-controlled.
+   - Pros: practical balance between IME compatibility and deterministic layout.
+   - Cons: still requires careful DOM<->model mapping.
+
+Current project direction:
+- Phase 9A uses the hybrid route.
+- Specifically, editing keeps browser input/selection integration, while visual lines and markdown token rendering are controlled by editor-owned `div/span` rows and metadata.
+
+## 3. Editing core
 
 ### 3.1 Event strategy
 Core events to handle:
@@ -135,6 +163,10 @@ Acceptance requirements:
 
 - `Tab` / `Shift+Tab`: indent/outdent (existing behavior).
 - `Backspace/Delete` on empty: soft-delete node (existing behavior).
+
+Implementation fallback (non-product path):
+- In environments where custom visual rows are not mounted (for example some test harness DOM setups),
+  multiline `Enter` falls back to in-node soft-break insertion to avoid accidental split behavior.
 
 ## 5. `[[...]]` autocomplete and bidirectional links
 
@@ -164,7 +196,7 @@ Target (Phase 9B):
 
 ## 8. Definition of Done (Phase 9 initial milestone)
 
-- contenteditable editor works with IME.
+- Editor input works with IME.
 - Outliner core controls do not regress (Enter/Tab/Arrow/Backspace).
 - `[[...]]` autocomplete works in rich-text editing.
 - Bidirectional link hover preview continues to work.

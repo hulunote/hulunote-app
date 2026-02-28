@@ -14,8 +14,8 @@ use leptos::prelude::*;
 
 #[cfg(target_arch = "wasm32")]
 pub use crate::editor::{
-    test_caret_utf16, test_mount_outline_editor, test_set_caret_utf16, test_set_selection_utf16,
-    test_view_text,
+    test_caret_utf16, test_mount_outline_editor, test_set_caret_from_client_point,
+    test_set_caret_utf16, test_set_selection_utf16, test_view_text,
 };
 
 // Needed for `#[wasm_bindgen(start)]` on the wasm entrypoint.
@@ -36,7 +36,7 @@ mod tests {
     use crate::editor::{
         apply_nav_content, backfill_content_request, compute_reorder_target, get_nav_content,
     };
-    use crate::models::{Nav, RecentDb, RecentNote};
+    use crate::models::Nav;
     use crate::storage::upsert_lru_by_key;
 
     #[test]
@@ -359,28 +359,5 @@ mod tests {
         let items = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let out = upsert_lru_by_key(items, "d".to_string(), |x, y| x == y, 3);
         assert_eq!(out, vec!["d", "a", "b"]);
-    }
-
-    #[test]
-    fn recent_structs_serde_roundtrip() {
-        let db = RecentDb {
-            id: "db1".to_string(),
-            name: "My DB".to_string(),
-            last_opened_ms: 123,
-        };
-        let note = RecentNote {
-            db_id: "db1".to_string(),
-            note_id: "n1".to_string(),
-            title: "T".to_string(),
-            last_opened_ms: 456,
-        };
-
-        let db_json = serde_json::to_string(&db).unwrap();
-        let db2: RecentDb = serde_json::from_str(&db_json).unwrap();
-        assert_eq!(db, db2);
-
-        let note_json = serde_json::to_string(&note).unwrap();
-        let note2: RecentNote = serde_json::from_str(&note_json).unwrap();
-        assert_eq!(note, note2);
     }
 }

@@ -1,8 +1,8 @@
 #![cfg(target_arch = "wasm32")]
 
 use hulunote_app::{
-    test_caret_utf16, test_mount_outline_editor, test_set_caret_utf16, test_set_selection_utf16,
-    test_view_text,
+    test_caret_utf16, test_mount_outline_editor, test_set_caret_from_client_point,
+    test_set_caret_utf16, test_set_selection_utf16, test_view_text,
 };
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::wasm_bindgen_test;
@@ -98,6 +98,29 @@ fn dispatch_shift_enter(el: &web_sys::HtmlElement) {
     let ev = web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init)
         .expect("create shift+enter keydown");
     el.dispatch_event(&ev).expect("dispatch shift+enter");
+}
+
+fn dispatch_input(el: &web_sys::HtmlElement) {
+    let ev = web_sys::Event::new("input").expect("create input event");
+    el.dispatch_event(&ev).expect("dispatch input");
+}
+
+fn dispatch_composition_start(el: &web_sys::HtmlElement) {
+    let ev =
+        web_sys::CompositionEvent::new("compositionstart").expect("create compositionstart event");
+    el.dispatch_event(&ev).expect("dispatch compositionstart");
+}
+
+fn dispatch_composition_end(el: &web_sys::HtmlElement, data: &str) {
+    let ev = web_sys::CompositionEvent::new("compositionend").expect("create compositionend");
+    ev.init_composition_event_with_can_bubble_arg_and_cancelable_arg_and_view_arg_and_data_arg(
+        "compositionend",
+        true,
+        true,
+        web_sys::window().as_ref(),
+        Some(data),
+    );
+    el.dispatch_event(&ev).expect("dispatch compositionend");
 }
 
 fn view_text(el: &web_sys::HtmlElement) -> String {
@@ -212,6 +235,80 @@ async fn delete_deletes_selected_blank_multiline_range_once_dom_integration() {
         dispatch_keydown(&el, "Delete", false);
         assert_eq!(view_text(&el), "head\ntail");
         assert_eq!(test_caret_utf16(&el), 5);
+    })
+    .await;
+}
+
+#[wasm_bindgen_test(async)]
+async fn ime_input_visible_during_composition() {
+    with_editor("ab", |el| {
+        test_set_caret_utf16(&el, 2);
+        dispatch_composition_start(&el);
+        el.set_inner_text("ab你");
+        dispatch_input(&el);
+        assert_eq!(view_text(&el), "ab你");
+    })
+    .await;
+}
+
+#[wasm_bindgen_test(async)]
+async fn ime_composition_end_advances_caret() {
+    with_editor("ab", |el| {
+        test_set_caret_utf16(&el, 2);
+        dispatch_composition_start(&el);
+        el.set_inner_text("ab你");
+        dispatch_composition_end(&el, "你");
+        assert_eq!(view_text(&el), "ab你");
+        assert_eq!(test_caret_utf16(&el), 3);
+    })
+    .await;
+}
+
+#[wasm_bindgen_test(async)]
+async fn markdown_click_hit_test_does_not_jump_to_row_start() {
+    with_editor("a **bold** z", |el| {
+        test_set_caret_utf16(&el, 0);
+        let rect = el.get_bounding_client_rect();
+        let x = (rect.right() - 2.0).round() as i32;
+        let y = (rect.top() + (rect.height() / 2.0)).round() as i32;
+        assert!(test_set_caret_from_client_point(&el, x, y));
+        assert!(test_caret_utf16(&el) > 0);
+    })
+    .await;
+}
+
+#[wasm_bindgen_test(async)]
+async fn native_input_fallback_reads_live_dom_not_stale_cache() {
+    with_editor("ab", |el| {
+        // Simulate a native DOM mutation path not intercepted by beforeinput
+        // (e.g. historyUndo/autocorrect replacement).
+        el.set_inner_text("abx");
+        dispatch_input(&el);
+
+        let cached = el.get_attribute("data-editor-text").unwrap_or_default();
+        assert_eq!(cached, "abx");
+        assert_eq!(view_text(&el), "abx");
+    })
+    .await;
+}
+
+#[wasm_bindgen_test(async)]
+async fn backspace_on_only_soft_break_removes_one_break() {
+    with_editor("\n", |el| {
+        test_set_caret_utf16(&el, 1);
+        dispatch_keydown(&el, "Backspace", false);
+        assert_eq!(view_text(&el), "");
+        assert_eq!(test_caret_utf16(&el), 0);
+    })
+    .await;
+}
+
+#[wasm_bindgen_test(async)]
+async fn editor_preserves_preformatted_whitespace_style() {
+    with_editor("  a  ", |el| {
+        let class_name = el.class_name();
+        assert!(class_name.contains("whitespace-pre-wrap"));
+        assert!(!class_name.contains("whitespace-nowrap"));
     })
     .await;
 }

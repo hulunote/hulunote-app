@@ -314,37 +314,14 @@ pub(crate) fn apply_editor_op(content: &str, op: EditorOp) -> (String, u32) {
 pub(crate) enum EditorAtom {
     Text(String),
     SoftBreak,
-    PlaceholderBreak,
 }
 
 pub(crate) fn serialize_editor_atoms_for_persist(atoms: &[EditorAtom]) -> String {
-    let mut end = atoms.len();
-    while end > 0 {
-        match atoms[end - 1] {
-            EditorAtom::PlaceholderBreak => end -= 1,
-            EditorAtom::SoftBreak => break,
-            EditorAtom::Text(_) => break,
-        }
-    }
-
-    let mut out = String::new();
-    for atom in &atoms[..end] {
-        match atom {
-            EditorAtom::Text(s) => out.push_str(&normalize_editor_text_for_persist(s)),
-            EditorAtom::SoftBreak => out.push('\n'),
-            EditorAtom::PlaceholderBreak => {}
-        }
-    }
-    out
-}
-
-pub(crate) fn serialize_editor_atoms_for_view(atoms: &[EditorAtom]) -> String {
     let mut out = String::new();
     for atom in atoms {
         match atom {
             EditorAtom::Text(s) => out.push_str(&normalize_editor_text_for_persist(s)),
             EditorAtom::SoftBreak => out.push('\n'),
-            EditorAtom::PlaceholderBreak => {}
         }
     }
     out
@@ -353,6 +330,17 @@ pub(crate) fn serialize_editor_atoms_for_view(atoms: &[EditorAtom]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn serialize_editor_atoms_for_view(atoms: &[EditorAtom]) -> String {
+        let mut out = String::new();
+        for atom in atoms {
+            match atom {
+                EditorAtom::Text(s) => out.push_str(&normalize_editor_text_for_persist(s)),
+                EditorAtom::SoftBreak => out.push('\n'),
+            }
+        }
+        out
+    }
 
     #[test]
     fn serialize_editor_atoms_keeps_intentional_empty_line() {
@@ -363,22 +351,6 @@ mod tests {
             EditorAtom::Text("b".into()),
         ];
         assert_eq!(serialize_editor_atoms_for_persist(&atoms), "a\n\nb");
-    }
-
-    #[test]
-    fn serialize_editor_atoms_drops_trailing_placeholder_after_single_line() {
-        let atoms = vec![EditorAtom::Text("a".into()), EditorAtom::PlaceholderBreak];
-        assert_eq!(serialize_editor_atoms_for_persist(&atoms), "a");
-    }
-
-    #[test]
-    fn serialize_editor_atoms_drops_placeholder_after_user_deleted_softbreak() {
-        let atoms = vec![
-            EditorAtom::Text("a".into()),
-            EditorAtom::SoftBreak,
-            EditorAtom::PlaceholderBreak,
-        ];
-        assert_eq!(serialize_editor_atoms_for_persist(&atoms), "a\n");
     }
 
     #[test]

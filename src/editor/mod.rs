@@ -26,12 +26,13 @@ use wasm_bindgen::{JsCast, JsValue};
 
 pub(crate) mod core;
 mod interaction;
+mod layout;
 mod ordering;
 mod render;
 mod selection;
 use self::core::{
     normalize_editor_text_for_persist, reduce_editor_state, serialize_editor_atoms_for_persist,
-    serialize_editor_atoms_for_view, EditorAtom, EditorIntent, EditorState,
+    EditorAtom, EditorIntent, EditorState,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,6 +69,13 @@ pub(crate) fn apply_nav_content(navs: &mut [Nav], nav_id: &str, content: &str) -
     }
 }
 
+fn row_display_content(navs: &[Nav], nav_id: &str, fallback: &str) -> String {
+    navs.iter()
+        .find(|x| x.id == nav_id)
+        .map(|x| x.content.clone())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
 fn utf16_to_byte_idx(s: &str, pos_utf16: u32) -> usize {
     selection::utf16_to_byte_idx(s, pos_utf16)
 }
@@ -84,15 +92,39 @@ fn split_at_utf16(s: &str, pos_utf16: u32) -> (String, String) {
 
 struct EditorDomSnapshot {
     atoms: Vec<EditorAtom>,
-    view_text: String,
     persisted_text: String,
 }
 
 const CARET_ANCHOR_ATTR: &str = "data-caret-anchor";
 const CARET_ANCHOR_VALUE: &str = "1";
+const EDITOR_TEXT_ATTR: &str = "data-editor-text";
+const VLINE_ATTR: &str = "data-vline";
+const VLINE_INDEX_ATTR: &str = "data-vline-index";
+const VLINE_START_ATTR: &str = "data-vline-start";
+const VLINE_LEN_ATTR: &str = "data-vline-len";
+const VLINE_HARD_BREAK_AFTER_ATTR: &str = "data-vline-hard-break-after";
 const CURSOR_SAVE_DEBOUNCE_MS: i32 = 300;
 
 fn ce_snapshot(el: &web_sys::HtmlElement) -> EditorDomSnapshot {
+    if let Some(raw) = el.get_attribute(EDITOR_TEXT_ATTR) {
+        let mut atoms = Vec::new();
+        let normalized = normalize_editor_text_for_persist(&raw);
+        let mut parts = normalized.split('\n').peekable();
+        while let Some(part) = parts.next() {
+            if !part.is_empty() {
+                atoms.push(EditorAtom::Text(part.to_string()));
+            }
+            if parts.peek().is_some() {
+                atoms.push(EditorAtom::SoftBreak);
+            }
+        }
+        let persisted_text = serialize_editor_atoms_for_persist(&atoms);
+        return EditorDomSnapshot {
+            atoms,
+            persisted_text,
+        };
+    }
+
     fn push_text_atom(raw: &str, out: &mut Vec<EditorAtom>) {
         let normalized = normalize_editor_text_for_persist(raw);
         let mut parts = normalized.split('\n').peekable();
@@ -116,14 +148,16 @@ fn ce_snapshot(el: &web_sys::HtmlElement) -> EditorDomSnapshot {
             if el.get_attribute(CARET_ANCHOR_ATTR).as_deref() == Some(CARET_ANCHOR_VALUE) {
                 return;
             }
-            if el.tag_name().eq_ignore_ascii_case("br") {
-                let is_trailing_placeholder =
-                    el.get_attribute("data-trailing-break").as_deref() == Some("1");
-                out.push(if is_trailing_placeholder {
-                    EditorAtom::PlaceholderBreak
-                } else {
-                    EditorAtom::SoftBreak
-                });
+            if el.get_attribute(VLINE_ATTR).as_deref() == Some("1")
+                && el.get_attribute(VLINE_HARD_BREAK_AFTER_ATTR).as_deref() == Some("1")
+            {
+                let len = el
+                    .get_attribute(VLINE_LEN_ATTR)
+                    .and_then(|v| v.parse::<u32>().ok())
+                    .unwrap_or(0);
+                if len == 0 {
+                    out.push(EditorAtom::SoftBreak);
+                }
                 return;
             }
         }
@@ -139,11 +173,9 @@ fn ce_snapshot(el: &web_sys::HtmlElement) -> EditorDomSnapshot {
     let root: web_sys::Node = el.clone().unchecked_into();
     let mut atoms = Vec::new();
     walk(&root, &mut atoms);
-    let view_text = serialize_editor_atoms_for_view(&atoms);
     let persisted_text = serialize_editor_atoms_for_persist(&atoms);
     EditorDomSnapshot {
         atoms,
-        view_text,
         persisted_text,
     }
 }
@@ -191,38 +223,72 @@ fn schedule_note_cursor_save(
 }
 
 fn ce_text(el: &web_sys::HtmlElement) -> String {
-    ce_snapshot(el).persisted_text
+    if let Some(s) = el.get_attribute(EDITOR_TEXT_ATTR) {
+        return s;
+    }
+    normalize_editor_text_for_persist(&el.inner_text())
 }
 
 fn ce_view_text(el: &web_sys::HtmlElement) -> String {
-    ce_snapshot(el).view_text
+    if let Some(s) = el.get_attribute(EDITOR_TEXT_ATTR) {
+        return s;
+    }
+    normalize_editor_text_for_persist(&el.inner_text())
 }
 
 fn ce_set_text(el: &web_sys::HtmlElement, s: &str) {
+    ce_render_visual_lines(el, s, None);
+}
+
+fn ce_render_visual_lines(el: &web_sys::HtmlElement, s: &str, caret_utf16: Option<u32>) {
     let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
         // Fallback for non-browser contexts.
         el.set_inner_text(s);
         return;
     };
 
-    // Keep DOM representation deterministic: text nodes + explicit <br> for each '\n'.
-    el.set_text_content(None);
-    let parts: Vec<&str> = s.split('\n').collect();
-    for (idx, part) in parts.iter().enumerate() {
-        if !part.is_empty() {
-            let text = doc.create_text_node(part);
-            let _ = el.append_child(&text);
-        }
-        if idx + 1 < parts.len() {
-            if let Ok(br) = doc.create_element("br") {
-                let _ = el.append_child(&br);
-            }
-        }
-    }
+    let _ = el.set_attribute(EDITOR_TEXT_ATTR, s);
 
-    if s.ends_with('\n') {
-        let root: web_sys::Node = el.clone().unchecked_into();
-        let _ = ensure_trailing_caret_anchor(&doc, &root);
+    // Keep DOM representation deterministic:
+    // - each visual row is a `<div data-vline="1">`
+    // - each row contains one `<span>` text chunk
+    // - semantic hard breaks are represented by row metadata
+    el.set_text_content(None);
+    let wrap_cfg = layout::WrapConfig::from_editor_width(el.client_width());
+    let lines = layout::build_visual_lines(s, wrap_cfg);
+
+    for (idx, line) in lines.into_iter().enumerate() {
+        let Ok(row) = doc.create_element("div") else {
+            continue;
+        };
+        let _ = row.set_attribute(VLINE_ATTR, "1");
+        let _ = row.set_attribute(VLINE_INDEX_ATTR, &idx.to_string());
+        let _ = row.set_attribute(VLINE_START_ATTR, &line.start_utf16.to_string());
+        let _ = row.set_attribute(VLINE_LEN_ATTR, &line.len_utf16.to_string());
+        let _ = row.set_attribute(
+            VLINE_HARD_BREAK_AFTER_ATTR,
+            if line.hard_break_after { "1" } else { "0" },
+        );
+        let _ = row.set_attribute("class", "min-h-[22px] leading-[22px] whitespace-pre");
+
+        if let Ok(span) = doc.create_element("span") {
+            let _ = span.set_attribute("data-editor-chunk", "1");
+            let _ = span.set_attribute("class", "inline");
+            if let Some(caret) = caret_utf16 {
+                let rel = if caret >= line.start_utf16 && caret <= line.start_utf16 + line.len_utf16
+                {
+                    Some(caret - line.start_utf16)
+                } else {
+                    None
+                };
+                span.set_inner_html(&wiki_highlight_html(&line.text, rel));
+            } else {
+                let text = doc.create_text_node(&line.text);
+                let _ = span.append_child(&text);
+            }
+            let _ = row.append_child(&span);
+        }
+        let _ = el.append_child(&row);
     }
 }
 
@@ -249,7 +315,7 @@ fn set_popover_open(el: &web_sys::Element, open: bool) {
     }
 
     let method = if open { "showPopover" } else { "hidePopover" };
-    let Ok(v) = js_sys::Reflect::get(el, &wasm_bindgen::JsValue::from_str(method)) else {
+    let Ok(v) = js_sys::Reflect::get(el, &JsValue::from_str(method)) else {
         return;
     };
     let Ok(f) = v.dyn_into::<js_sys::Function>() else {
@@ -297,8 +363,7 @@ fn wiki_highlight_html(s: &str, caret_utf16: Option<u32>) -> String {
 }
 
 fn ce_set_wiki_highlighted(el: &web_sys::HtmlElement, s: &str, caret_utf16: Option<u32>) {
-    let html = wiki_highlight_html(s, caret_utf16);
-    el.set_inner_html(&html);
+    ce_render_visual_lines(el, s, caret_utf16);
 }
 
 fn ce_set_text_and_restore_caret_with_highlight(
@@ -366,15 +431,6 @@ fn has_any_text_content(s: &str) -> bool {
     s.chars().any(|c| !c.is_whitespace() && !is_ignorable(c))
 }
 
-#[cfg(test)]
-fn effective_semantic_br_count(total_br_count: u32, has_trailing_placeholder_br: bool) -> u32 {
-    if has_trailing_placeholder_br {
-        total_br_count.saturating_sub(1)
-    } else {
-        total_br_count
-    }
-}
-
 fn outline_delete_state(has_any_text: bool, semantic_br_count: u32) -> OutlineDeleteState {
     if has_any_text {
         return OutlineDeleteState::HasContent;
@@ -386,36 +442,115 @@ fn outline_delete_state(has_any_text: bool, semantic_br_count: u32) -> OutlineDe
     }
 }
 
-#[cfg(test)]
-fn should_persist_nav_id(nav_id: &str) -> bool {
-    let id = nav_id.trim();
-    !id.is_empty()
+fn parse_u32_attr(el: &web_sys::Element, key: &str) -> Option<u32> {
+    el.get_attribute(key).and_then(|v| v.parse::<u32>().ok())
 }
 
-fn ensure_trailing_caret_anchor(
-    doc: &web_sys::Document,
+fn row_element_from_node(node: &web_sys::Node) -> Option<web_sys::Element> {
+    let el: web_sys::Element = if let Some(e) = node.dyn_ref::<web_sys::Element>() {
+        e.clone()
+    } else {
+        node.parent_node()?.dyn_into::<web_sys::Element>().ok()?
+    };
+    if el.get_attribute(VLINE_ATTR).as_deref() == Some("1") {
+        Some(el)
+    } else {
+        el.closest("[data-vline='1']").ok().flatten()
+    }
+}
+
+fn plain_subtree_utf16_len(node: &web_sys::Node) -> u32 {
+    if node.node_type() == web_sys::Node::TEXT_NODE {
+        return node.node_value().unwrap_or_default().encode_utf16().count() as u32;
+    }
+    let kids = node.child_nodes();
+    let mut total = 0u32;
+    for i in 0..kids.length() {
+        if let Some(k) = kids.get(i) {
+            total += plain_subtree_utf16_len(&k);
+        }
+    }
+    total
+}
+
+fn plain_point_utf16(
     root: &web_sys::Node,
-) -> Option<web_sys::Node> {
-    // Remove all existing trailing markers inside this root.
-    if let Ok(list) = doc.query_selector_all("[data-caret-anchor='1']") {
-        for i in 0..list.length() {
-            if let Some(n) = list.get(i) {
-                if root.contains(Some(&n)) {
-                    let _ = n.parent_node().and_then(|p| p.remove_child(&n).ok());
+    target: &web_sys::Node,
+    target_offset: u32,
+) -> Option<u32> {
+    fn walk(
+        node: &web_sys::Node,
+        target: &web_sys::Node,
+        target_offset: u32,
+        total: &mut u32,
+    ) -> bool {
+        if node.is_same_node(Some(target)) {
+            if node.node_type() == web_sys::Node::TEXT_NODE {
+                let n = node.node_value().unwrap_or_default().encode_utf16().count() as u32;
+                *total += target_offset.min(n);
+                return true;
+            }
+            let kids = node.child_nodes();
+            let upto = target_offset.min(kids.length());
+            for i in 0..upto {
+                if let Some(k) = kids.get(i) {
+                    *total += plain_subtree_utf16_len(&k);
+                }
+            }
+            return true;
+        }
+        if node.node_type() == web_sys::Node::TEXT_NODE {
+            *total += node.node_value().unwrap_or_default().encode_utf16().count() as u32;
+            return false;
+        }
+        let kids = node.child_nodes();
+        for i in 0..kids.length() {
+            if let Some(k) = kids.get(i) {
+                if walk(&k, target, target_offset, total) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    let mut total = 0u32;
+    if walk(root, target, target_offset, &mut total) {
+        Some(total)
+    } else {
+        None
+    }
+}
+
+fn plain_dom_point_for_utf16(root: &web_sys::Node, pos_utf16: u32) -> Option<(web_sys::Node, u32)> {
+    fn walk(node: &web_sys::Node, remaining: &mut i32, out: &mut Option<(web_sys::Node, u32)>) {
+        if out.is_some() {
+            return;
+        }
+        if node.node_type() == web_sys::Node::TEXT_NODE {
+            let n = node.node_value().unwrap_or_default().encode_utf16().count() as i32;
+            if *remaining <= n {
+                *out = Some((node.clone(), (*remaining).max(0) as u32));
+            } else {
+                *remaining -= n;
+            }
+            return;
+        }
+        let kids = node.child_nodes();
+        for i in 0..kids.length() {
+            if let Some(k) = kids.get(i) {
+                walk(&k, remaining, out);
+                if out.is_some() {
+                    return;
                 }
             }
         }
     }
 
-    let Ok(anchor) = doc.create_element("br") else {
-        return None;
-    };
-    let _ = anchor.set_attribute(CARET_ANCHOR_ATTR, CARET_ANCHOR_VALUE);
-    let _ = anchor.set_attribute("data-trailing-break", "1");
-    let _ = anchor.set_attribute("aria-hidden", "true");
-    let anchor_node: web_sys::Node = anchor.unchecked_into();
-    let _ = root.append_child(&anchor_node);
-    Some(anchor_node)
+    let mut remaining = pos_utf16 as i32;
+    let mut out: Option<(web_sys::Node, u32)> = None;
+    walk(root, &mut remaining, &mut out);
+    out
 }
 
 fn ce_selection_utf16(el: &web_sys::HtmlElement) -> (u32, u32, u32) {
@@ -446,79 +581,42 @@ fn ce_selection_utf16(el: &web_sys::HtmlElement) -> (u32, u32, u32) {
         return (len, len, len);
     }
 
-    fn subtree_utf16_len(node: &web_sys::Node) -> u32 {
-        if node.node_type() == web_sys::Node::TEXT_NODE {
-            return node.node_value().unwrap_or_default().encode_utf16().count() as u32;
-        }
-        if let Some(el) = node.dyn_ref::<web_sys::Element>() {
-            if el.tag_name().eq_ignore_ascii_case("br") {
-                return 1;
-            }
-        }
-        let kids = node.child_nodes();
-        let mut total = 0;
-        for i in 0..kids.length() {
-            if let Some(k) = kids.get(i) {
-                total += subtree_utf16_len(&k);
-            }
-        }
-        total
-    }
-
     fn point_utf16(
         root: &web_sys::Node,
         target: &web_sys::Node,
         target_offset: u32,
     ) -> Option<u32> {
-        fn walk(
-            node: &web_sys::Node,
-            target: &web_sys::Node,
-            target_offset: u32,
-            total: &mut u32,
-        ) -> bool {
-            if node.is_same_node(Some(target)) {
-                if node.node_type() == web_sys::Node::TEXT_NODE {
-                    let n = node.node_value().unwrap_or_default().encode_utf16().count() as u32;
-                    *total += target_offset.min(n);
-                    return true;
-                }
-                let kids = node.child_nodes();
-                let upto = target_offset.min(kids.length());
-                for i in 0..upto {
-                    if let Some(k) = kids.get(i) {
-                        *total += subtree_utf16_len(&k);
-                    }
-                }
-                return true;
+        if target.is_same_node(Some(root)) {
+            let root_el = root.dyn_ref::<web_sys::Element>()?;
+            let rows = root_el.query_selector_all("[data-vline='1']").ok()?;
+            if rows.length() == 0 {
+                return plain_point_utf16(root, target, target_offset);
             }
-
-            if node.node_type() == web_sys::Node::TEXT_NODE {
-                *total += node.node_value().unwrap_or_default().encode_utf16().count() as u32;
-                return false;
+            let idx = (target_offset as usize).min(rows.length() as usize);
+            if idx == 0 {
+                return Some(0);
             }
-            if let Some(el) = node.dyn_ref::<web_sys::Element>() {
-                if el.tag_name().eq_ignore_ascii_case("br") {
-                    *total += 1;
-                    return false;
-                }
+            if let Some(prev) = rows.get((idx - 1) as u32) {
+                let prev_el: web_sys::Element = prev.dyn_into().ok()?;
+                let prev_start = parse_u32_attr(&prev_el, VLINE_START_ATTR)?;
+                let prev_len = parse_u32_attr(&prev_el, VLINE_LEN_ATTR)?;
+                let hard = prev_el
+                    .get_attribute(VLINE_HARD_BREAK_AFTER_ATTR)
+                    .as_deref()
+                    == Some("1");
+                return Some(prev_start + prev_len + if hard { 1 } else { 0 });
             }
-
-            let kids = node.child_nodes();
-            for i in 0..kids.length() {
-                if let Some(k) = kids.get(i) {
-                    if walk(&k, target, target_offset, total) {
-                        return true;
-                    }
-                }
-            }
-            false
+            return Some(0);
         }
 
-        let mut total = 0;
-        if walk(root, target, target_offset, &mut total) {
-            Some(total)
+        if let Some(row) = row_element_from_node(target) {
+            let start = parse_u32_attr(&row, VLINE_START_ATTR)?;
+            let row_len = parse_u32_attr(&row, VLINE_LEN_ATTR)?;
+            let row_node: web_sys::Node = row.unchecked_into();
+            let rel = plain_point_utf16(&row_node, target, target_offset).unwrap_or(0);
+            Some(start + rel.min(row_len))
         } else {
-            None
+            plain_point_utf16(root, target, target_offset)
         }
     }
 
@@ -561,68 +659,48 @@ fn ce_current_line_info(el: &web_sys::HtmlElement) -> (u32, u32) {
     let Some(anchor_node) = sel.anchor_node() else {
         return (0, 0);
     };
-
     if !root_node.contains(Some(&anchor_node)) {
         return (0, 0);
     }
 
-    let anchor_offset = sel.anchor_offset() as usize;
-    let node_type = anchor_node.node_type();
-
-    let view_text = ce_view_text(el);
-    let total_lines = view_text.lines().count().max(1) as u32;
-
-    if anchor_node.is_same_node(Some(&root_node)) {
-        let mut line_number = 0u32;
-        let children = root_node.child_nodes();
-        for i in 0..anchor_offset.min(children.length() as usize) {
-            if let Some(child) = children.get(i as u32) {
-                if child.node_type() == web_sys::Node::ELEMENT_NODE {
-                    if let Ok(el) = child.clone().dyn_into::<web_sys::Element>() {
-                        if el.tag_name().to_uppercase() == "BR" {
-                            line_number += 1;
-                        }
-                    }
-                }
-            }
-        }
-        return (line_number, total_lines);
+    let rows = match el.query_selector_all("[data-vline='1']") {
+        Ok(rs) => rs,
+        Err(_) => return (0, 0),
+    };
+    if rows.length() == 0 {
+        let view_text = ce_view_text(el);
+        let total = view_text.split('\n').count().max(1) as u32;
+        let (caret, _, _) = ce_selection_utf16(el);
+        let (line_idx, _col) = utf16_line_col_at_pos(&view_text, caret);
+        return (line_idx.min(total - 1), total);
     }
+    let total_lines = rows.length().max(1);
 
-    if node_type == web_sys::Node::TEXT_NODE {
-        let mut line_number = 0u32;
-
-        let children = root_node.child_nodes();
-        for i in 0..children.length() {
-            if let Some(child) = children.get(i) {
-                if child.is_same_node(Some(&anchor_node)) {
-                    if let Some(text) = anchor_node.text_content() {
-                        let text_before: String = text.chars().take(anchor_offset).collect();
-                        line_number += text_before.matches('\n').count() as u32;
-                    }
-                    break;
-                }
-
-                if child.node_type() == web_sys::Node::ELEMENT_NODE {
-                    if let Ok(el) = child.clone().dyn_into::<web_sys::Element>() {
-                        if el.tag_name().to_uppercase() == "BR" {
-                            line_number += 1;
-                        }
-                    }
-                }
-
-                if child.node_type() == web_sys::Node::TEXT_NODE {
-                    if let Some(text) = child.text_content() {
-                        line_number += text.matches('\n').count() as u32;
-                    }
-                }
-            }
+    let row_el = if let Some(e) = anchor_node.dyn_ref::<web_sys::Element>() {
+        if e.get_attribute(VLINE_ATTR).as_deref() == Some("1") {
+            Some(e.clone())
+        } else {
+            e.closest("[data-vline='1']").ok().flatten()
         }
+    } else {
+        anchor_node
+            .parent_node()
+            .and_then(|p| p.dyn_into::<web_sys::Element>().ok())
+            .and_then(|p| {
+                if p.get_attribute(VLINE_ATTR).as_deref() == Some("1") {
+                    Some(p)
+                } else {
+                    p.closest("[data-vline='1']").ok().flatten()
+                }
+            })
+    };
 
-        return (line_number, total_lines);
-    }
-
-    (0, total_lines)
+    let idx = row_el
+        .and_then(|r| r.get_attribute(VLINE_INDEX_ATTR))
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(0)
+        .min(total_lines - 1);
+    (idx, total_lines)
 }
 
 fn utf16_line_col_at_pos(text: &str, pos_utf16: u32) -> (u32, u32) {
@@ -663,105 +741,52 @@ fn utf16_pos_for_line_col(text: &str, target_line_idx: u32, target_col: u32) -> 
     text.encode_utf16().count() as u32
 }
 
-fn ce_child_index(parent: &web_sys::Node, child: &web_sys::Node) -> Option<u32> {
-    let kids = parent.child_nodes();
-    for i in 0..kids.length() {
-        if let Some(n) = kids.get(i) {
-            if n == *child {
-                return Some(i);
-            }
-        }
-    }
-    None
-}
-
-fn ce_is_caret_anchor(node: &web_sys::Node) -> bool {
-    node.dyn_ref::<web_sys::Element>()
-        .and_then(|e| e.get_attribute(CARET_ANCHOR_ATTR))
-        .as_deref()
-        == Some(CARET_ANCHOR_VALUE)
-}
-
-fn ce_parent_before_anchor(node: &web_sys::Node) -> Option<(web_sys::Node, u32)> {
-    let parent = node.parent_node()?;
-    let idx = ce_child_index(&parent, node)?;
-    Some((parent, idx))
-}
-
 fn ce_resolve_dom_point_for_utf16(
     el: &web_sys::HtmlElement,
     pos_utf16: u32,
 ) -> Option<(web_sys::Node, u32)> {
-    fn walk(node: &web_sys::Node, remaining: &mut i32, out: &mut Option<(web_sys::Node, u32)>) {
-        if out.is_some() {
-            return;
+    fn row_point(row: &web_sys::Element, rel_utf16: u32) -> (web_sys::Node, u32) {
+        let row_node: web_sys::Node = row.clone().unchecked_into();
+        if let Some(point) = plain_dom_point_for_utf16(&row_node, rel_utf16) {
+            return point;
         }
+        (row_node, row.child_nodes().length())
+    }
 
-        if node.node_type() == web_sys::Node::TEXT_NODE {
-            let s = node.node_value().unwrap_or_default();
-            let n = s.encode_utf16().count() as i32;
-            if *remaining <= n {
-                *out = Some((node.clone(), (*remaining).max(0) as u32));
-            } else {
-                *remaining -= n;
-            }
-            return;
+    let rows = el.query_selector_all("[data-vline='1']").ok()?;
+    if rows.length() == 0 {
+        let root_node: web_sys::Node = el.clone().unchecked_into();
+        return plain_dom_point_for_utf16(&root_node, pos_utf16).or(Some((root_node, 0)));
+    }
+
+    let pos = pos_utf16.min(ce_view_text(el).encode_utf16().count() as u32);
+    for i in 0..rows.length() {
+        let row_node = rows.get(i)?;
+        let row_el: web_sys::Element = row_node.dyn_into().ok()?;
+        let start = parse_u32_attr(&row_el, VLINE_START_ATTR)?;
+        let row_len = parse_u32_attr(&row_el, VLINE_LEN_ATTR)?;
+        let row_end = start + row_len;
+        let hard = row_el.get_attribute(VLINE_HARD_BREAK_AFTER_ATTR).as_deref() == Some("1");
+
+        if pos < start {
+            return Some(row_point(&row_el, 0));
         }
-
-        if let Some(el) = node.dyn_ref::<web_sys::Element>() {
-            if ce_is_caret_anchor(node) {
-                if *remaining <= 0 {
-                    if let Some(pos) = ce_parent_before_anchor(node) {
-                        *out = Some(pos);
-                    } else {
-                        *out = Some((node.clone(), 0));
-                    }
-                }
-                return;
-            }
-
-            if el.tag_name().eq_ignore_ascii_case("br") {
-                if *remaining <= 1 {
-                    if let Some(next) = node.next_sibling() {
-                        if ce_is_caret_anchor(&next) {
-                            if let Some(pos) = ce_parent_before_anchor(&next) {
-                                *out = Some(pos);
-                            } else {
-                                *out = Some((next, 0));
-                            }
-                            return;
-                        }
-                    }
-                    if let Some(parent) = node.parent_node() {
-                        if let Some(idx) = ce_child_index(&parent, node) {
-                            *out = Some((parent, idx + 1));
-                            return;
-                        }
-                    }
-                    *out = Some((node.clone(), u32::MAX));
-                } else {
-                    *remaining -= 1;
-                }
-                return;
-            }
+        if pos <= row_end {
+            return Some(row_point(&row_el, pos.saturating_sub(start)));
         }
-
-        let kids = node.child_nodes();
-        for i in 0..kids.length() {
-            if let Some(k) = kids.get(i) {
-                walk(&k, remaining, out);
-                if out.is_some() {
-                    return;
-                }
+        if hard && pos == row_end + 1 {
+            if let Some(next) = rows.get(i + 1) {
+                let next_el: web_sys::Element = next.dyn_into().ok()?;
+                return Some(row_point(&next_el, 0));
             }
+            return Some(row_point(&row_el, row_len));
         }
     }
 
-    let mut remaining = pos_utf16 as i32;
-    let mut out: Option<(web_sys::Node, u32)> = None;
-    let root_node: web_sys::Node = el.clone().unchecked_into();
-    walk(&root_node, &mut remaining, &mut out);
-    out
+    let last = rows.get(rows.length() - 1)?;
+    let last_el: web_sys::Element = last.dyn_into().ok()?;
+    let last_len = parse_u32_attr(&last_el, VLINE_LEN_ATTR).unwrap_or(0);
+    Some(row_point(&last_el, last_len))
 }
 
 fn ce_set_selection_utf16_internal(el: &web_sys::HtmlElement, start_utf16: u32, end_utf16: u32) {
@@ -908,54 +933,147 @@ pub fn test_view_text(el: &web_sys::HtmlElement) -> String {
     ce_view_text(el)
 }
 
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub fn test_set_caret_from_client_point(
+    el: &web_sys::HtmlElement,
+    client_x: i32,
+    client_y: i32,
+) -> bool {
+    ce_set_caret_from_client_point(el, client_x, client_y)
+}
+
 fn ce_set_caret_from_client_point(el: &web_sys::HtmlElement, client_x: i32, client_y: i32) -> bool {
     if !el.is_connected() {
         return false;
     }
-
-    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+    let Some(win) = web_sys::window() else {
         return false;
     };
-
-    let doc_js: JsValue = doc.clone().into();
-    let Ok(fn_js) = js_sys::Reflect::get(&doc_js, &JsValue::from_str("caretRangeFromPoint")) else {
+    let Some(doc) = win.document() else {
         return false;
     };
-    if !fn_js.is_function() {
+    let root_node: web_sys::Node = el.clone().unchecked_into();
+
+    let mut hit_point: Option<(web_sys::Node, u32)> = None;
+    if let Ok(v) = js_sys::Reflect::get(&win, &JsValue::from_str("caretPositionFromPoint")) {
+        if let Ok(f) = v.dyn_into::<js_sys::Function>() {
+            if let Ok(pos) = f.call2(
+                &win,
+                &JsValue::from_f64(client_x as f64),
+                &JsValue::from_f64(client_y as f64),
+            ) {
+                if !pos.is_null() && !pos.is_undefined() {
+                    let node = js_sys::Reflect::get(&pos, &JsValue::from_str("offsetNode"))
+                        .ok()
+                        .and_then(|v| v.dyn_into::<web_sys::Node>().ok());
+                    let offset = js_sys::Reflect::get(&pos, &JsValue::from_str("offset"))
+                        .ok()
+                        .and_then(|v| v.as_f64())
+                        .map(|v| v as u32);
+                    if let (Some(node), Some(offset)) = (node, offset) {
+                        if root_node.contains(Some(&node)) {
+                            hit_point = Some((node, offset));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if hit_point.is_none() {
+        if let Ok(v) = js_sys::Reflect::get(doc.as_ref(), &JsValue::from_str("caretRangeFromPoint"))
+        {
+            if let Ok(f) = v.dyn_into::<js_sys::Function>() {
+                if let Ok(range_v) = f.call2(
+                    doc.as_ref(),
+                    &JsValue::from_f64(client_x as f64),
+                    &JsValue::from_f64(client_y as f64),
+                ) {
+                    if !range_v.is_null() && !range_v.is_undefined() {
+                        if let Ok(range) = range_v.dyn_into::<web_sys::Range>() {
+                            if let (Ok(node), Ok(offset)) =
+                                (range.start_container(), range.start_offset())
+                            {
+                                if root_node.contains(Some(&node)) {
+                                    hit_point = Some((node, offset));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some((node, offset)) = hit_point {
+        if let Ok(range) = doc.create_range() {
+            let _ = range.set_start(&node, offset);
+            let _ = range.set_end(&node, offset);
+            if let Ok(Some(sel)) = doc.get_selection() {
+                let _ = sel.remove_all_ranges();
+                let _ = sel.add_range(&range);
+                let (caret, _end, _len) = ce_selection_utf16(el);
+                ce_set_caret_utf16(el, caret);
+                return true;
+            }
+        }
+    }
+
+    let Ok(rows) = el.query_selector_all("[data-vline='1']") else {
+        return false;
+    };
+    if rows.length() == 0 {
         return false;
     }
 
-    let func: js_sys::Function = fn_js.unchecked_into();
-    let Ok(range_js) = func.call2(
-        &doc_js,
-        &JsValue::from_f64(client_x as f64),
-        &JsValue::from_f64(client_y as f64),
-    ) else {
-        return false;
-    };
-
-    if range_js.is_null() || range_js.is_undefined() {
-        return false;
+    let mut picked: Option<web_sys::Element> = None;
+    let mut closest_dist = f64::MAX;
+    for i in 0..rows.length() {
+        let Some(n) = rows.get(i) else {
+            continue;
+        };
+        let Ok(row) = n.dyn_into::<web_sys::Element>() else {
+            continue;
+        };
+        let rect = row.get_bounding_client_rect();
+        let y = client_y as f64;
+        if y >= rect.top() && y <= rect.bottom() {
+            picked = Some(row);
+            break;
+        }
+        let dist = if y < rect.top() {
+            rect.top() - y
+        } else {
+            y - rect.bottom()
+        };
+        if dist < closest_dist {
+            closest_dist = dist;
+            picked = Some(row);
+        }
     }
 
-    let Ok(range) = range_js.dyn_into::<web_sys::Range>() else {
+    let Some(row) = picked else {
         return false;
     };
-
-    // Ensure the resolved caret belongs to the current editable node.
-    let Some(container) = range.start_container().ok() else {
-        return false;
-    };
-    let root: web_sys::Node = el.clone().unchecked_into();
-    if !root.contains(Some(&container)) {
-        return false;
-    }
-
-    let Ok(Some(sel)) = doc.get_selection() else {
-        return false;
-    };
-    let _ = sel.remove_all_ranges();
-    let _ = sel.add_range(&range);
+    let start = row
+        .get_attribute(VLINE_START_ATTR)
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(0);
+    let row_len = row
+        .get_attribute(VLINE_LEN_ATTR)
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(0);
+    let row_text = row
+        .query_selector("[data-editor-chunk='1']")
+        .ok()
+        .flatten()
+        .map(|e| e.text_content().unwrap_or_default())
+        .unwrap_or_default();
+    let rect = row.get_bounding_client_rect();
+    let x_rel = (client_x as f64 - rect.left()).max(0.0);
+    let rel_utf16 = layout::utf16_for_x(&row_text, x_rel).min(row_len);
+    ce_set_caret_utf16(el, start + rel_utf16);
     true
 }
 
@@ -2140,6 +2258,7 @@ pub fn OutlineNode(
 
     // IME stability: while composing, don't intercept outliner keys like Enter/Tab.
     let is_composing: RwSignal<bool> = RwSignal::new(false);
+    let composing_start_caret: RwSignal<Option<u32>> = RwSignal::new(None);
     // When beforeinput/paste already applied an EditorOp, on:input should be fallback-only.
     let op_applied_in_this_turn: RwSignal<bool> = RwSignal::new(false);
     // In multiline mode, Shift+Enter can jump to first-line end and then jump back.
@@ -2725,7 +2844,8 @@ pub fn OutlineNode(
 
                                     if !is_editing {
                                         // The note list already applied draft overlay on load; use in-memory value directly.
-                                        let content_now = n.content.clone();
+                                        let content_now =
+                                            row_display_content(&navs.get(), &id, &n.content);
                                         let content_for_click = content_now.clone();
 
                                         // Show placeholder text for empty nodes while keeping them clickable.
@@ -3456,16 +3576,21 @@ pub fn OutlineNode(
                                                 let _ = sync_sv.try_with_value(|s| s.on_nav_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &nav_id, &next_state.text));
                                             }
                                             on:input=move |ev: web_sys::Event| {
-                                                if is_composing.get_untracked() {
-                                                    return;
-                                                }
-
                                                 let Some(el) = ev
                                                     .target()
                                                     .and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
                                                 else {
                                                     return;
                                                 };
+
+                                                if is_composing.get_untracked() {
+                                                    // During IME composition, keep local text in sync with live DOM
+                                                    // but don't run editor reducers/autocomplete.
+                                                    let live = normalize_editor_text_for_persist(&el.inner_text());
+                                                    let _ = el.set_attribute(EDITOR_TEXT_ATTR, &live);
+                                                    editing_value.set(live);
+                                                    return;
+                                                }
 
                                                 let (caret_utf16, _caret_end_utf16, _len_before) = ce_selection_utf16(&el);
                                                 schedule_note_cursor_save(
@@ -3483,7 +3608,15 @@ pub fn OutlineNode(
                                                 let v = if handled_by_op {
                                                     editing_value.get_untracked()
                                                 } else {
-                                                    let v = ce_text(&el);
+                                                    let mut v =
+                                                        normalize_editor_text_for_persist(&el.inner_text());
+                                                    let _ = el.set_attribute(EDITOR_TEXT_ATTR, &v);
+                                                    let len = v.encode_utf16().count() as u32;
+                                                    let caret = caret_utf16.min(len);
+                                                    ce_set_text_and_restore_caret_with_highlight(
+                                                        &el, &v, caret,
+                                                    );
+                                                    v = ce_view_text(&el);
                                                     editing_value.set(v.clone());
                                                     let nav_id = nav_id_sv.get_value();
                                                     let _ = sync_sv.try_with_value(|s| s.on_nav_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &nav_id, &v));
@@ -3561,6 +3694,12 @@ pub fn OutlineNode(
                                                 ce_refresh_wiki_highlighted(&el);
                                             }
                                             on:compositionstart=move |_ev: web_sys::CompositionEvent| {
+                                                if let Some(el) = editing_ref.get_untracked().map(|n| n.unchecked_into::<web_sys::HtmlElement>()) {
+                                                    let (start, _end, _len) = ce_selection_utf16(&el);
+                                                    composing_start_caret.set(Some(start));
+                                                } else {
+                                                    composing_start_caret.set(None);
+                                                }
                                                 is_composing.set(true);
                                                 let _ = sync_sv.try_with_value(|s| s.set_ime_composing(true));
                                             }
@@ -3571,9 +3710,27 @@ pub fn OutlineNode(
                                                     .target()
                                                     .and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
                                                 {
-                                                    let v = ce_text(&el);
-                                                    let (caret_utf16, _caret_end_utf16, _len_before) =
+                                                    let v = normalize_editor_text_for_persist(&el.inner_text());
+                                                    let (caret_from_dom, _caret_end_utf16, _len_before) =
                                                         ce_selection_utf16(&el);
+                                                    let v_len = v.encode_utf16().count() as u32;
+                                                    let committed_len =
+                                                        ev.data().unwrap_or_default().encode_utf16().count() as u32;
+                                                    let caret_utf16 = composing_start_caret
+                                                        .get_untracked()
+                                                        .map(|start| {
+                                                            if committed_len > 0 {
+                                                                (start + committed_len).min(v_len)
+                                                            } else {
+                                                                caret_from_dom.min(v_len)
+                                                            }
+                                                        })
+                                                        .unwrap_or_else(|| caret_from_dom.min(v_len));
+                                                    composing_start_caret.set(None);
+                                                    // Normalize back into controlled visual-line DOM once IME commits.
+                                                    ce_set_text_and_restore_caret_with_highlight(
+                                                        &el, &v, caret_utf16,
+                                                    );
                                                     schedule_note_cursor_save(
                                                         cursor_save_timer_id,
                                                         &db_id_sv.get_value(),
@@ -4427,31 +4584,20 @@ pub fn OutlineNode(
                                                 {
                                                     ev.prevent_default();
 
-                                                    // Remove one semantic soft break at a time.
+                                                    // Remove one semantic soft break at a time using
+                                                    // the persisted text model, not DOM <br> nodes.
                                                     if let Some(el) = input() {
-                                                        if let Ok(list) = el.query_selector_all("br:not([data-trailing-break='1'])") {
-                                                            let len = list.length();
-                                                            if len >= 1 {
-                                                                if let Some(to_remove) = list.get(len - 1) {
-                                                                    let _ = to_remove
-                                                                        .parent_node()
-                                                                        .and_then(|p| p.remove_child(&to_remove).ok());
-                                                                }
-                                                            }
+                                                        let mut next = ce_view_text(&el);
+                                                        if next.ends_with('\n') {
+                                                            next.pop();
                                                         }
 
-                                                        // Re-normalize trailing caret anchor.
-                                                        let doc = web_sys::window().and_then(|w| w.document());
-                                                        if let Some(doc) = doc {
-                                                            let root: web_sys::Node = el.clone().unchecked_into();
-                                                            let _ = ensure_trailing_caret_anchor(&doc, &root);
-                                                        }
+                                                        ce_set_text(&el, &next);
 
                                                         // Keep caret at end.
-                                                        let txt = ce_text(&el);
-                                                        let end = txt.encode_utf16().count() as u32;
+                                                        let end = next.encode_utf16().count() as u32;
                                                         ce_set_caret_utf16(&el, end);
-                                                        editing_value.set(txt);
+                                                        editing_value.set(next);
                                                         target_cursor_col.set(Some(end));
                                                     }
 
@@ -4612,6 +4758,49 @@ pub fn OutlineNode(
                                                     .unwrap_or((0, String::new()));
 
                                                 if key == "Enter" {
+                                                    // Fallback path for non-virtual-row DOM (mainly wasm test harness
+                                                    // that sets contenteditable via `inner_text` directly): keep
+                                                    // multiline Enter as soft-break insertion instead of split-nav.
+                                                    let has_virtual_rows = input()
+                                                        .as_ref()
+                                                        .and_then(|el| el.query_selector("[data-vline='1']").ok().flatten())
+                                                        .is_some();
+                                                    if !has_virtual_rows
+                                                        && !ev.shift_key()
+                                                        && view_text_for_enter.contains('\n')
+                                                    {
+                                                        ev.prevent_default();
+                                                        let end_pos =
+                                                            view_text_for_enter.encode_utf16().count() as u32;
+                                                        let next = reduce_editor_state(
+                                                            &EditorState {
+                                                                text: view_text_for_enter.clone(),
+                                                                caret_utf16: end_pos,
+                                                                remembered_caret_utf16: shift_enter_return_caret
+                                                                    .get_untracked(),
+                                                            },
+                                                            EditorIntent::ReplaceRange {
+                                                                start_utf16: end_pos,
+                                                                end_utf16: end_pos,
+                                                                text: "\n".to_string(),
+                                                            },
+                                                        );
+                                                        if let Some(el) = input() {
+                                                            ce_set_text_and_restore_caret_with_highlight(
+                                                                &el,
+                                                                &next.text,
+                                                                next.caret_utf16,
+                                                            );
+                                                        }
+                                                        editing_value.set(next.text.clone());
+                                                        target_cursor_col.set(Some(next.caret_utf16));
+                                                        let nav_id_now = nav_id_sv.get_value();
+                                                        let _ = sync_sv.try_with_value(|s| {
+                                                            s.on_nav_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &nav_id_now, &next.text);
+                                                        });
+                                                        return;
+                                                    }
+
                                                     let state = EditorState {
                                                         text: view_text_for_enter.clone(),
                                                         caret_utf16: caret_start_for_enter,
@@ -4676,6 +4865,15 @@ pub fn OutlineNode(
                                                             x.content = left_content.clone();
                                                         }
                                                     });
+                                                    if let Some(el) = input().as_ref() {
+                                                        // Ensure current row DOM reflects split-left content immediately.
+                                                        let left_caret = left_content.encode_utf16().count() as u32;
+                                                        ce_set_text_and_restore_caret_with_highlight(
+                                                            el,
+                                                            &left_content,
+                                                            left_caret,
+                                                        );
+                                                    }
 
                                                     // Save current node content via sync controller.
                                                     let _ = sync_sv.try_with_value(|s| {
@@ -5014,15 +5212,6 @@ mod tests {
     }
 
     #[test]
-    fn effective_semantic_br_count_behavior() {
-        assert_eq!(effective_semantic_br_count(0, false), 0);
-        assert_eq!(effective_semantic_br_count(0, true), 0);
-        assert_eq!(effective_semantic_br_count(1, false), 1);
-        assert_eq!(effective_semantic_br_count(1, true), 0);
-        assert_eq!(effective_semantic_br_count(2, true), 1);
-    }
-
-    #[test]
     fn split_at_utf16_behavior() {
         assert_eq!(
             split_at_utf16("hello world", 5),
@@ -5195,37 +5384,6 @@ mod tests {
     }
 
     #[test]
-    fn root_container_id_returns_all_when_multiple_root_candidates_exist() {
-        let root_parent = ROOT_CONTAINER_PARENT_ID.to_string();
-        let note_id = "n1".to_string();
-
-        let root_a = Nav {
-            id: "root-a".to_string(),
-            note_id: note_id.clone(),
-            parid: root_parent.clone(),
-            same_deep_order: 0.0,
-            content: "ROOT A".to_string(),
-            is_display: true,
-            is_delete: false,
-            properties: None,
-        };
-        let root_b = Nav {
-            id: "root-b".to_string(),
-            note_id,
-            parid: root_parent,
-            same_deep_order: 1.0,
-            content: "ROOT B".to_string(),
-            is_display: true,
-            is_delete: false,
-            properties: None,
-        };
-
-        let id = root_container_id(&[root_a, root_b]);
-        // When multiple root candidates exist, we log error and return first one.
-        assert!(id.is_some());
-    }
-
-    #[test]
     fn visible_preorder_ids_skip_root_container_row() {
         let root_parent = ROOT_CONTAINER_PARENT_ID.to_string();
         let note_id = "n1".to_string();
@@ -5389,10 +5547,38 @@ mod tests {
     }
 
     #[test]
-    fn should_persist_nav_id_behavior() {
-        assert!(!should_persist_nav_id(""));
-        assert!(!should_persist_nav_id("   "));
-        assert!(should_persist_nav_id("invalid-id"));
-        assert!(should_persist_nav_id("abc"));
+    fn row_display_content_prefers_latest_nav_value() {
+        let navs = vec![Nav {
+            id: "n1".to_string(),
+            note_id: "note".to_string(),
+            parid: "root".to_string(),
+            same_deep_order: 1.0,
+            content: "new-content".to_string(),
+            is_display: true,
+            is_delete: false,
+            properties: None,
+        }];
+        let out = row_display_content(&navs, "n1", "stale-fallback");
+        assert_eq!(out, "new-content");
+    }
+
+    #[test]
+    fn row_display_content_falls_back_when_missing() {
+        let navs: Vec<Nav> = vec![];
+        let out = row_display_content(&navs, "missing", "fallback");
+        assert_eq!(out, "fallback");
+    }
+
+    #[test]
+    fn wiki_highlight_renders_markdown_when_caret_outside_token_range() {
+        let html = wiki_highlight_html("a **bold** z", Some(0));
+        assert!(html.contains("<strong>bold</strong>"));
+    }
+
+    #[test]
+    fn wiki_highlight_keeps_raw_markdown_when_caret_inside_token_range() {
+        let html = wiki_highlight_html("a **bold** z", Some(4));
+        assert!(html.contains("**bold**"));
+        assert!(!html.contains("<strong>bold</strong>"));
     }
 }

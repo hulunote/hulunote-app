@@ -379,6 +379,14 @@ It is written as product behavior (not implementation detail) and is intended to
 - Backend sync is asynchronous.
 - The product follows a local-first model (immediate UX, eventual backend convergence).
 
+#### 9.2.1 Markdown token rendering in edit mode
+
+- Edit mode uses a custom visual-line layout (contenteditable + controlled `div/span` rows).
+- Token rendering is decided by caret vs token range, not by the whole line:
+  - Caret outside a markdown token range: token renders as formatted text.
+  - Caret inside a markdown token range (including start/end boundaries): token is shown as raw marker text.
+- This rule applies independently per token (`**bold**`, `*italic*`, `` `code` ``).
+
 ### 9.3 Keyboard behavior
 
 #### Enter / Shift+Enter
