@@ -346,6 +346,51 @@ fn resolve_wiki_link_target(
     (exists, is_self)
 }
 
+fn sort_navs_by_same_deep_order(navs: &mut Vec<&Nav>) {
+    navs.sort_by(|a, b| {
+        a.same_deep_order
+            .partial_cmp(&b.same_deep_order)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+}
+
+fn arrow_left_boundary_target_id(navs: &[Nav], current_id: &str) -> Option<String> {
+    let me = navs.iter().find(|n| n.id == current_id)?;
+    let mut siblings = navs
+        .iter()
+        .filter(|n| n.parid == me.parid)
+        .collect::<Vec<_>>();
+    sort_navs_by_same_deep_order(&mut siblings);
+
+    if let Some(prev_sibling) = siblings
+        .into_iter()
+        .rev()
+        .find(|n| n.same_deep_order < me.same_deep_order)
+    {
+        return Some(prev_sibling.id.clone());
+    }
+
+    if me.parid == ROOT_CONTAINER_PARENT_ID {
+        return None;
+    }
+    if root_container_id(navs).as_deref() == Some(me.parid.as_str()) {
+        return None;
+    }
+
+    navs.iter().find(|n| n.id == me.parid).map(|n| n.id.clone())
+}
+
+fn arrow_right_boundary_target(navs: &[Nav], current_id: &str) -> Option<(String, bool)> {
+    let me = navs.iter().find(|n| n.id == current_id)?;
+    let mut children = navs
+        .iter()
+        .filter(|n| !n.is_delete && n.parid == current_id)
+        .collect::<Vec<_>>();
+    sort_navs_by_same_deep_order(&mut children);
+    let first_child = children.first()?;
+    Some((first_child.id.clone(), !me.is_display))
+}
+
 fn set_popover_open(el: &web_sys::Element, open: bool) {
     if !el.is_connected() {
         return;
@@ -4537,66 +4582,21 @@ pub fn OutlineNode(
                                                         save_current(&nav_id_now);
 
                                                         let all = navs.get_untracked();
-                                                        let Some(me) = all.iter().find(|n| n.id == nav_id_now) else {
+                                                        let Some(target_id) =
+                                                            arrow_left_boundary_target_id(
+                                                                &all,
+                                                                &nav_id_now,
+                                                            )
+                                                        else {
                                                             return;
                                                         };
-
-                                                        let root_container_parent_id = ROOT_CONTAINER_PARENT_ID;
-
-                                                        // Prefer previous sibling when it exists.
-                                                        // If there is no previous sibling (i.e. first child), go to parent.
-                                                        let parid = me.parid.clone();
-                                                        let mut sibs = all
+                                                        let Some(target) = all
                                                             .iter()
-                                                            .filter(|n| n.parid == parid)
+                                                            .find(|n| n.id == target_id)
                                                             .cloned()
-                                                            .collect::<Vec<_>>();
-                                                        sibs.sort_by(|a, b| a
-                                                            .same_deep_order
-                                                            .partial_cmp(&b.same_deep_order)
-                                                            .unwrap_or(std::cmp::Ordering::Equal));
-
-                                                        let prev = sibs
-                                                            .iter()
-                                                            .rev()
-                                                            .find(|s| s.same_deep_order < me.same_deep_order)
-                                                            .cloned();
-
-                                                        if prev.is_none() {
-                                                            if me.parid != root_container_parent_id {
-                                                                if let Some(parent) = all.iter().find(|n| n.id == me.parid) {
-                                                                    editing_id.set(Some(parent.id.clone()));
-                                                                    editing_value.set(parent.content.clone());
-                                                                    editing_snapshot.set(Some((parent.id.clone(), parent.content.clone())));
-                                                                    target_cursor_col.set(Some(parent.content.encode_utf16().count() as u32));
-                                                                }
-                                                            }
+                                                        else {
                                                             return;
-                                                        }
-
-                                                        let prev = prev.unwrap();
-
-                                                        // Descend to last visible node in prev's subtree.
-                                                        fn last_visible_descendant(all: &[Nav], start: &Nav) -> Nav {
-                                                            if !start.is_display {
-                                                                return start.clone();
-                                                            }
-                                                            let mut children = all
-                                                                .iter()
-                                                                .filter(|n| n.parid == start.id)
-                                                                .cloned()
-                                                                .collect::<Vec<_>>();
-                                                            children.sort_by(|a, b| a
-                                                                .same_deep_order
-                                                                .partial_cmp(&b.same_deep_order)
-                                                                .unwrap_or(std::cmp::Ordering::Equal));
-                                                            if let Some(last) = children.last() {
-                                                                return last_visible_descendant(all, last);
-                                                            }
-                                                            start.clone()
-                                                        }
-
-                                                        let target = last_visible_descendant(&all, &prev);
+                                                        };
                                                         editing_id.set(Some(target.id.clone()));
                                                         editing_value.set(target.content.clone());
                                                         editing_snapshot.set(Some((target.id.clone(), target.content.clone())));
@@ -4605,59 +4605,56 @@ pub fn OutlineNode(
                                                     }
 
                                                     if key == "ArrowRight" && cursor_start == len {
+                                                        let all = navs.get_untracked();
+                                                        let Some((target_id, should_expand)) =
+                                                            arrow_right_boundary_target(
+                                                                &all,
+                                                                &nav_id_now,
+                                                            )
+                                                        else {
+                                                            // No child and no next visible node: keep default caret behavior.
+                                                            return;
+                                                        };
+
                                                         ev.prevent_default();
                                                         target_cursor_col.set(None);
                                                         save_current(&nav_id_now);
 
-                                                        let all = navs.get_untracked();
-
-                                                        // If the current node has children and is collapsed, expand it.
-                                                        // If expanded, move into first child.
-                                                        let mut children = all
-                                                            .iter()
-                                                            .filter(|n| n.parid == nav_id_now)
-                                                            .cloned()
-                                                            .collect::<Vec<_>>();
-                                                        children.sort_by(|a, b| a
-                                                            .same_deep_order
-                                                            .partial_cmp(&b.same_deep_order)
-                                                            .unwrap_or(std::cmp::Ordering::Equal));
-
-                                                        if let Some(first_child) = children.first().cloned() {
-                                                            let is_display = all
-                                                                .iter()
-                                                                .find(|n| n.id == nav_id_now)
-                                                                .map(|n| n.is_display)
-                                                                .unwrap_or(true);
-
-                                                            if !is_display {
-                                                                // Expand current node AND descend into first child.
-                                                                // ArrowRight at end expands and moves into the child branch.
-                                                                navs.update(|xs| {
-                                                                    if let Some(x) = xs.iter_mut().find(|x| x.id == nav_id_now) {
-                                                                        x.is_display = true;
-                                                                    }
-                                                                });
-
-                                                                // Persist expand meta; sync controller handles network.
-                                                                if let Some(n) = navs
-                                                                    .get_untracked()
-                                                                    .into_iter()
-                                                                    .find(|n| n.id == nav_id_now)
+                                                        if should_expand {
+                                                            // Expand current node AND descend into the child branch.
+                                                            navs.update(|xs| {
+                                                                if let Some(x) =
+                                                                    xs.iter_mut().find(|x| {
+                                                                        x.id == nav_id_now
+                                                                    })
                                                                 {
-                                                                    let _ = sync_sv.try_with_value(|s| s.on_nav_meta_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &n));
+                                                                    x.is_display = true;
                                                                 }
-                                                            }
+                                                            });
 
-                                                            // Move into first child.
-                                                            editing_id.set(Some(first_child.id.clone()));
-                                                            editing_value.set(first_child.content.clone());
-                                                            editing_snapshot.set(Some((first_child.id.clone(), first_child.content.clone())));
+                                                            // Persist expand meta; sync controller handles network.
+                                                            if let Some(n) = navs
+                                                                .get_untracked()
+                                                                .into_iter()
+                                                                .find(|n| n.id == nav_id_now)
+                                                            {
+                                                                let _ = sync_sv.try_with_value(|s| s.on_nav_meta_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &n));
+                                                            }
+                                                        }
+
+                                                        if let Some(target) = all
+                                                            .iter()
+                                                            .find(|n| n.id == target_id)
+                                                            .cloned()
+                                                        {
+                                                            editing_id.set(Some(target.id.clone()));
+                                                            editing_value.set(target.content.clone());
+                                                            editing_snapshot
+                                                                .set(Some((target.id.clone(), target.content.clone())));
                                                             target_cursor_col.set(Some(0));
                                                             return;
                                                         }
 
-                                                        // If there are no children, ArrowRight does not move to a sibling.
                                                         return;
                                                     }
                                                 }
@@ -5989,6 +5986,232 @@ mod tests {
             resolve_wiki_link_target(&notes, "db1", "n1", "Other"),
             (true, false)
         );
+    }
+
+    #[test]
+    fn arrow_left_boundary_targets_previous_sibling_not_descendant() {
+        let note_id = "n1".to_string();
+        let navs = vec![
+            Nav {
+                id: "parent".to_string(),
+                note_id: note_id.clone(),
+                parid: ROOT_CONTAINER_PARENT_ID.to_string(),
+                same_deep_order: 1.0,
+                content: "parent".to_string(),
+                is_display: true,
+                is_delete: false,
+                properties: None,
+            },
+            Nav {
+                id: "a".to_string(),
+                note_id: note_id.clone(),
+                parid: "parent".to_string(),
+                same_deep_order: 1.0,
+                content: "A".to_string(),
+                is_display: true,
+                is_delete: false,
+                properties: None,
+            },
+            Nav {
+                id: "a-child".to_string(),
+                note_id: note_id.clone(),
+                parid: "a".to_string(),
+                same_deep_order: 1.0,
+                content: "A child".to_string(),
+                is_display: true,
+                is_delete: false,
+                properties: None,
+            },
+            Nav {
+                id: "b".to_string(),
+                note_id,
+                parid: "parent".to_string(),
+                same_deep_order: 2.0,
+                content: "B".to_string(),
+                is_display: true,
+                is_delete: false,
+                properties: None,
+            },
+        ];
+
+        assert_eq!(
+            arrow_left_boundary_target_id(&navs, "b"),
+            Some("a".to_string())
+        );
+    }
+
+    #[test]
+    fn arrow_left_boundary_falls_back_to_parent_for_first_sibling() {
+        let note_id = "n1".to_string();
+        let navs = vec![
+            Nav {
+                id: "root".to_string(),
+                note_id: note_id.clone(),
+                parid: ROOT_CONTAINER_PARENT_ID.to_string(),
+                same_deep_order: 0.0,
+                content: "".to_string(),
+                is_display: true,
+                is_delete: false,
+                properties: None,
+            },
+            Nav {
+                id: "parent".to_string(),
+                note_id: note_id.clone(),
+                parid: "root".to_string(),
+                same_deep_order: 1.0,
+                content: "parent".to_string(),
+                is_display: true,
+                is_delete: false,
+                properties: None,
+            },
+            Nav {
+                id: "first".to_string(),
+                note_id,
+                parid: "parent".to_string(),
+                same_deep_order: 1.0,
+                content: "first".to_string(),
+                is_display: true,
+                is_delete: false,
+                properties: None,
+            },
+        ];
+
+        assert_eq!(
+            arrow_left_boundary_target_id(&navs, "first"),
+            Some("parent".to_string())
+        );
+    }
+
+    #[test]
+    fn arrow_left_boundary_returns_none_for_first_top_level_node() {
+        let note_id = "n1".to_string();
+        let navs = vec![
+            Nav {
+                id: "root".to_string(),
+                note_id: note_id.clone(),
+                parid: ROOT_CONTAINER_PARENT_ID.to_string(),
+                same_deep_order: 0.0,
+                content: "".to_string(),
+                is_display: true,
+                is_delete: false,
+                properties: None,
+            },
+            Nav {
+                id: "first".to_string(),
+                note_id,
+                parid: "root".to_string(),
+                same_deep_order: 1.0,
+                content: "first".to_string(),
+                is_display: true,
+                is_delete: false,
+                properties: None,
+            },
+        ];
+
+        assert_eq!(arrow_left_boundary_target_id(&navs, "first"), None);
+    }
+
+    #[test]
+    fn arrow_right_boundary_targets_first_child_and_requests_expand_when_collapsed() {
+        let note_id = "n1".to_string();
+        let navs = vec![
+            Nav {
+                id: "parent".to_string(),
+                note_id: note_id.clone(),
+                parid: ROOT_CONTAINER_PARENT_ID.to_string(),
+                same_deep_order: 1.0,
+                content: "parent".to_string(),
+                is_display: false,
+                is_delete: false,
+                properties: None,
+            },
+            Nav {
+                id: "child-1".to_string(),
+                note_id: note_id.clone(),
+                parid: "parent".to_string(),
+                same_deep_order: 1.0,
+                content: "child 1".to_string(),
+                is_display: true,
+                is_delete: false,
+                properties: None,
+            },
+            Nav {
+                id: "child-2".to_string(),
+                note_id,
+                parid: "parent".to_string(),
+                same_deep_order: 2.0,
+                content: "child 2".to_string(),
+                is_display: true,
+                is_delete: false,
+                properties: None,
+            },
+        ];
+
+        assert_eq!(
+            arrow_right_boundary_target(&navs, "parent"),
+            Some(("child-1".to_string(), true))
+        );
+    }
+
+    #[test]
+    fn arrow_right_boundary_targets_first_child_without_expand_when_already_expanded() {
+        let note_id = "n1".to_string();
+        let navs = vec![
+            Nav {
+                id: "parent".to_string(),
+                note_id: note_id.clone(),
+                parid: ROOT_CONTAINER_PARENT_ID.to_string(),
+                same_deep_order: 1.0,
+                content: "parent".to_string(),
+                is_display: true,
+                is_delete: false,
+                properties: None,
+            },
+            Nav {
+                id: "child-1".to_string(),
+                note_id,
+                parid: "parent".to_string(),
+                same_deep_order: 1.0,
+                content: "child 1".to_string(),
+                is_display: true,
+                is_delete: false,
+                properties: None,
+            },
+        ];
+
+        assert_eq!(
+            arrow_right_boundary_target(&navs, "parent"),
+            Some(("child-1".to_string(), false))
+        );
+    }
+
+    #[test]
+    fn arrow_right_boundary_returns_none_when_at_last_visible_without_children() {
+        let note_id = "n1".to_string();
+        let navs = vec![
+            Nav {
+                id: "root".to_string(),
+                note_id: note_id.clone(),
+                parid: ROOT_CONTAINER_PARENT_ID.to_string(),
+                same_deep_order: 0.0,
+                content: "".to_string(),
+                is_display: true,
+                is_delete: false,
+                properties: None,
+            },
+            Nav {
+                id: "only".to_string(),
+                note_id,
+                parid: "root".to_string(),
+                same_deep_order: 1.0,
+                content: "only".to_string(),
+                is_display: true,
+                is_delete: false,
+                properties: None,
+            },
+        ];
+
+        assert_eq!(arrow_right_boundary_target(&navs, "only"), None);
     }
 
     #[test]
