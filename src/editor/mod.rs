@@ -4157,6 +4157,7 @@ pub fn OutlineNode(
                                                 }
 
                                                 let (caret_utf16, _caret_end_utf16, _len_before) = ce_selection_utf16(&el);
+                                                target_cursor_col.set(Some(caret_utf16));
                                                 schedule_note_cursor_save(
                                                     cursor_save_timer_id,
                                                     &db_id_sv.get_value(),
@@ -4393,11 +4394,20 @@ pub fn OutlineNode(
                                                 let Some(el) = ev
                                                     .current_target()
                                                     .and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
+                                                    .or_else(|| {
+                                                        ev.target()
+                                                            .and_then(|t| t.dyn_into::<web_sys::Node>().ok())
+                                                            .and_then(|n| n.parent_element())
+                                                            .and_then(|e| {
+                                                                e.dyn_into::<web_sys::HtmlElement>().ok()
+                                                            })
+                                                    })
                                                 else {
                                                     return;
                                                 };
                                                 let (caret_utf16, caret_end_utf16, _len_before) =
                                                     ce_selection_utf16(&el);
+                                                target_cursor_col.set(Some(caret_utf16));
                                                 schedule_note_cursor_save(
                                                     cursor_save_timer_id,
                                                     &db_id_sv.get_value(),
