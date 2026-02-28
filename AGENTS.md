@@ -99,6 +99,7 @@ Avoid interactive git flows that can hang in non-TTY environments.
 - For all test types, avoid conditional branches and manual exception throwing in non-semantic helpers; keep helper logic linear and surface failures through test/spec assertions.
 - For all test types, avoid regex in assertions/locators by default; prefer exact text/value/path checks unless regex is strictly necessary.
 - Keep waits minimal and state-driven; avoid redundant pre-action waits.
+- Style assertions are allowed only when style carries logical meaning (for example state, permission, interactivity, or accessibility); avoid pure visual-preference style tests.
 
 ## Formatting Policy
 
