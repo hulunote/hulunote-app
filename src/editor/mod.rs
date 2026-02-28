@@ -226,14 +226,14 @@ fn ce_text(el: &web_sys::HtmlElement) -> String {
     if let Some(s) = el.get_attribute(EDITOR_TEXT_ATTR) {
         return s;
     }
-    normalize_editor_text_for_persist(&el.inner_text())
+    ce_snapshot(el).persisted_text
 }
 
 fn ce_view_text(el: &web_sys::HtmlElement) -> String {
     if let Some(s) = el.get_attribute(EDITOR_TEXT_ATTR) {
         return s;
     }
-    normalize_editor_text_for_persist(&el.inner_text())
+    ce_snapshot(el).persisted_text
 }
 
 fn ce_set_text(el: &web_sys::HtmlElement, s: &str) {
@@ -2844,8 +2844,26 @@ pub fn OutlineNode(
 
                                     if !is_editing {
                                         // The note list already applied draft overlay on load; use in-memory value directly.
-                                        let content_now =
-                                            row_display_content(&navs.get(), &id, &n.content);
+                                        let db_id_now = app_state
+                                            .0
+                                            .current_database_id
+                                            .get_untracked()
+                                            .unwrap_or_default();
+                                        let note_id_now = note_id_sv.get_value();
+                                        let content_now = if db_id_now.trim().is_empty()
+                                            || note_id_now.trim().is_empty()
+                                        {
+                                            row_display_content(&navs.get(), &id, &n.content)
+                                        } else {
+                                            load_note_draft(&db_id_now, &note_id_now)
+                                                .nav_state
+                                                .get(&id)
+                                                .filter(|state| state.content_dirty)
+                                                .map(|state| state.content.clone())
+                                                .unwrap_or_else(|| {
+                                                    row_display_content(&navs.get(), &id, &n.content)
+                                                })
+                                        };
                                         let content_for_click = content_now.clone();
 
                                         // Show placeholder text for empty nodes while keeping them clickable.
@@ -2854,6 +2872,12 @@ pub fn OutlineNode(
                                             "".to_string()
                                         } else {
                                             content_now
+                                        };
+                                        let semantic_line_count = content_display.split('\n').count().max(1);
+                                        let content_style = if is_empty_display {
+                                            "".to_string()
+                                        } else {
+                                            format!("min-height: {}px;", semantic_line_count * 22)
                                         };
                                         let content_class = if is_empty_display {
                                             // Keep empty read-mode row height aligned with contenteditable focus height
@@ -2971,6 +2995,7 @@ pub fn OutlineNode(
                                         return view! {
                                             <div
                                                 class=content_class
+                                                style=content_style
                                                 role="button"
                                                 aria-label="Outline row"
                                                 on:mousedown=move |ev: web_sys::MouseEvent| {
@@ -3895,6 +3920,74 @@ pub fn OutlineNode(
                                                     ev.related_target(),
                                                 ) {
                                                     return;
+                                                }
+
+                                                if let Some(el) = ev
+                                                    .current_target()
+                                                    .and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
+                                                    .or_else(|| {
+                                                        ev.target()
+                                                            .and_then(|t| {
+                                                                t.dyn_into::<web_sys::HtmlElement>().ok()
+                                                            })
+                                                            .and_then(|t| {
+                                                                t.closest("[data-nav-id]")
+                                                                    .ok()
+                                                                    .flatten()
+                                                                    .and_then(|e| {
+                                                                        e.dyn_into::<web_sys::HtmlElement>().ok()
+                                                                    })
+                                                            })
+                                                    })
+                                                    .or_else(|| {
+                                                        editing_ref
+                                                            .get_untracked()
+                                                            .and_then(|n| {
+                                                                n.dyn_into::<web_sys::HtmlElement>().ok()
+                                                            })
+                                                    })
+                                                {
+                                                    let new_content = ce_text(&el);
+                                                    let mut nav_id_now =
+                                                        el.get_attribute("data-nav-id").unwrap_or_default();
+                                                    let mut note_id_now =
+                                                        el.get_attribute("data-note-id").unwrap_or_default();
+
+                                                    if nav_id_now.trim().is_empty() {
+                                                        nav_id_now = nav_id_sv.get_value();
+                                                    }
+                                                    if note_id_now.trim().is_empty() {
+                                                        note_id_now = note_id_sv.get_value();
+                                                    }
+
+                                                    if !nav_id_now.trim().is_empty()
+                                                        && !note_id_now.trim().is_empty()
+                                                    {
+                                                        let should_save = editing_snapshot
+                                                            .get_untracked()
+                                                            .filter(|(id, _)| id == &nav_id_now)
+                                                            .map(|(_id, original)| original != new_content)
+                                                            .unwrap_or_else(|| {
+                                                                get_nav_content(&navs.get_untracked(), &nav_id_now)
+                                                                    .unwrap_or_default()
+                                                                    != new_content
+                                                            });
+
+                                                        navs.update(|xs| {
+                                                            let _ = apply_nav_content(xs, &nav_id_now, &new_content);
+                                                        });
+
+                                                        if should_save {
+                                                            let _ = sync_sv.try_with_value(|s| {
+                                                                s.on_nav_changed_for_scope(
+                                                                    &db_id_sv.get_value(),
+                                                                    &note_id_now,
+                                                                    &nav_id_now,
+                                                                    &new_content,
+                                                                );
+                                                            });
+                                                        }
+                                                    }
                                                 }
 
                                                 let nav_id_now = nav_id_sv.get_value();

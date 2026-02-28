@@ -158,6 +158,11 @@ async function editorSelectionState(editor: Locator): Promise<{
   })
 }
 
+async function elementHeightPx(locator: Locator): Promise<number> {
+  await expect(locator).toBeVisible()
+  return await locator.evaluate(el => Math.round(el.getBoundingClientRect().height))
+}
+
 test("outline editor: can edit first row", async ({ outlineDb, page }, testInfo) => {
   const token = `pw-edit-${testInfo.project.name}`
   await openIsolatedNote(page, outlineDb)
@@ -436,6 +441,36 @@ test("selection: backspace/delete removes selected blank multi-line range in one
       return text.split("\n").length - 1
     })
     .toBeLessThanOrEqual(beforeBreakCount - 2)
+
+  await deleteCurrentNote(page)
+})
+
+test("outline nav: trailing blank line should not shift layout on blur/focus", async ({
+  outlineDb,
+  page,
+}, testInfo) => {
+  await openIsolatedNote(page, outlineDb)
+  await setRowText(page, 0, `tail-blank-${testInfo.project.name}`)
+  await page.keyboard.press("Shift+Enter")
+  await page.keyboard.press("Shift+Enter")
+  const expectedText = `tail-blank-${testInfo.project.name}\n\n`
+
+  const rowEditor = rowEditorLocator(page, 0)
+  await expect(rowEditor).toBeVisible()
+  const focusedHeight = await elementHeightPx(rowSurfaceLocator(page, 0))
+
+  const titleInput = page.getByRole("textbox", { name: "Note title" }).first()
+  await titleInput.click()
+  await expect(titleInput).toBeFocused()
+  const blurredHeight = await elementHeightPx(rowSurfaceLocator(page, 0))
+
+  await rowSurfaceLocator(page, 0).click()
+  await expect(rowEditor).toBeVisible()
+  await expect.poll(async () => rowEditor.getAttribute("data-editor-text")).toBe(expectedText)
+  const refocusedHeight = await elementHeightPx(rowSurfaceLocator(page, 0))
+
+  expect(Math.abs(blurredHeight - focusedHeight)).toBeLessThanOrEqual(2)
+  expect(Math.abs(blurredHeight - refocusedHeight)).toBeLessThanOrEqual(2)
 
   await deleteCurrentNote(page)
 })

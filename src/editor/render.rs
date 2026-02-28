@@ -70,11 +70,19 @@ pub fn render_basic_markdown_inline_html(s: &str) -> String {
         let mut iter = rest.chars();
         if let Some(ch) = iter.next() {
             let w = ch.len_utf8();
-            push_escaped(&mut out, &rest[..w]);
+            if ch == '\n' {
+                out.push_str("<br>");
+            } else {
+                push_escaped(&mut out, &rest[..w]);
+            }
             i += w;
         } else {
             break;
         }
+    }
+
+    if s.ends_with('\n') {
+        out.push_str("&nbsp;");
     }
 
     out
@@ -219,6 +227,12 @@ mod tests {
     fn keeps_unclosed_markers_as_plain_text() {
         let html = render_basic_markdown_inline_html("**a *b `c");
         assert_eq!(html, "**a *b `c");
+    }
+
+    #[test]
+    fn renders_newline_as_br_in_read_mode_html() {
+        let html = render_basic_markdown_inline_html("a\nb\n");
+        assert_eq!(html, "a<br>b<br>&nbsp;");
     }
 
     #[test]
