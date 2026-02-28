@@ -5,8 +5,7 @@ use crate::components::ui::{Command, CommandItem, CommandList, Spinner};
 use crate::drafts::{get_pending_nav_ids, load_note_draft, reconcile_local_nav_meta};
 use crate::drafts::{load_note_snapshot, save_note_snapshot};
 use crate::linking::{
-    extract_bidirectional_links, normalize_outline_page_title, parse_bidirectional_tokens,
-    BidirectionalToken,
+    normalize_outline_page_title, parse_bidirectional_tokens, BidirectionalToken,
 };
 use crate::models::{Nav, Note};
 use crate::state::AppContext;
@@ -241,6 +240,17 @@ fn ce_set_text(el: &web_sys::HtmlElement, s: &str) {
 }
 
 fn ce_render_visual_lines(el: &web_sys::HtmlElement, s: &str, caret_utf16: Option<u32>) {
+    ce_render_visual_lines_with(el, s, caret_utf16, &|_title| false);
+}
+
+fn ce_render_visual_lines_with<F>(
+    el: &web_sys::HtmlElement,
+    s: &str,
+    caret_utf16: Option<u32>,
+    is_valid_wiki_link: &F,
+) where
+    F: Fn(&str) -> bool,
+{
     let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
         // Fallback for non-browser contexts.
         el.set_inner_text(s);
@@ -274,18 +284,14 @@ fn ce_render_visual_lines(el: &web_sys::HtmlElement, s: &str, caret_utf16: Optio
         if let Ok(span) = doc.create_element("span") {
             let _ = span.set_attribute("data-editor-chunk", "1");
             let _ = span.set_attribute("class", "inline");
-            if let Some(caret) = caret_utf16 {
-                let rel = if caret >= line.start_utf16 && caret <= line.start_utf16 + line.len_utf16
-                {
+            let rel = caret_utf16.and_then(|caret| {
+                if caret >= line.start_utf16 && caret <= line.start_utf16 + line.len_utf16 {
                     Some(caret - line.start_utf16)
                 } else {
                     None
-                };
-                span.set_inner_html(&wiki_highlight_html(&line.text, rel));
-            } else {
-                let text = doc.create_text_node(&line.text);
-                let _ = span.append_child(&text);
-            }
+                }
+            });
+            span.set_inner_html(&wiki_highlight_html(&line.text, rel, is_valid_wiki_link));
             let _ = row.append_child(&span);
         }
         let _ = el.append_child(&row);
@@ -302,6 +308,24 @@ fn render_basic_markdown_inline_html(s: &str) -> String {
 
 fn render_basic_markdown_inline_html_for_editing(s: &str, caret_byte: Option<usize>) -> String {
     render::render_basic_markdown_inline_html_for_editing(s, caret_byte)
+}
+
+fn wiki_link_exists(app_state: &AppContext, title: &str) -> bool {
+    let db_id = app_state
+        .0
+        .current_database_id
+        .get_untracked()
+        .unwrap_or_default();
+    if db_id.trim().is_empty() {
+        return false;
+    }
+    let title_norm = normalize_outline_page_title(title);
+    app_state
+        .0
+        .notes
+        .get_untracked()
+        .iter()
+        .any(|n| n.database_id == db_id && normalize_outline_page_title(&n.title) == title_norm)
 }
 
 fn set_popover_open(el: &web_sys::Element, open: bool) {
@@ -324,7 +348,14 @@ fn set_popover_open(el: &web_sys::Element, open: bool) {
     let _ = f.call0(el);
 }
 
-fn wiki_highlight_html(s: &str, caret_utf16: Option<u32>) -> String {
+fn should_treat_beforeinput_as_insert_text(input_type: &str, input_data: &str) -> bool {
+    input_type == "insertText" || (input_type.is_empty() && !input_data.is_empty())
+}
+
+fn wiki_highlight_html<F>(s: &str, caret_utf16: Option<u32>, is_valid_wiki_link: &F) -> String
+where
+    F: Fn(&str) -> bool,
+{
     let caret_byte = caret_utf16.map(|p| utf16_to_byte_idx(s, p));
     let mut cursor = 0usize;
     let mut out = String::new();
@@ -351,9 +382,15 @@ fn wiki_highlight_html(s: &str, caret_utf16: Option<u32>) -> String {
                 if label.is_empty() {
                     out.push_str("[[]]");
                 } else {
+                    let link_class = if is_valid_wiki_link(&label) {
+                        "text-primary underline underline-offset-2 decoration-dotted"
+                    } else {
+                        "text-muted-foreground underline underline-offset-2 decoration-dotted"
+                    };
                     out.push_str(&format!(
-                        "<span class=\"text-muted-foreground\">[[</span><span class=\"text-primary underline underline-offset-2 decoration-dotted\">{}</span><span class=\"text-muted-foreground\">]]</span>",
-                        escape_html(&label)
+                        "<span class=\"text-muted-foreground\">[[</span><span class=\"{}\">{}</span><span class=\"text-muted-foreground\">]]</span>",
+                        link_class,
+                        escape_html(&label),
                     ));
                 }
             }
@@ -362,24 +399,37 @@ fn wiki_highlight_html(s: &str, caret_utf16: Option<u32>) -> String {
     out
 }
 
-fn ce_set_wiki_highlighted(el: &web_sys::HtmlElement, s: &str, caret_utf16: Option<u32>) {
-    ce_render_visual_lines(el, s, caret_utf16);
+fn ce_set_wiki_highlighted<F>(
+    el: &web_sys::HtmlElement,
+    s: &str,
+    caret_utf16: Option<u32>,
+    is_valid_wiki_link: &F,
+) where
+    F: Fn(&str) -> bool,
+{
+    ce_render_visual_lines_with(el, s, caret_utf16, is_valid_wiki_link);
 }
 
-fn ce_set_text_and_restore_caret_with_highlight(
+fn ce_set_text_and_restore_caret_with_highlight<F>(
     el: &web_sys::HtmlElement,
     text: &str,
     caret_utf16: u32,
-) {
+    is_valid_wiki_link: &F,
+) where
+    F: Fn(&str) -> bool,
+{
     ce_set_text(el, text);
-    ce_set_wiki_highlighted(el, text, Some(caret_utf16));
+    ce_set_wiki_highlighted(el, text, Some(caret_utf16), is_valid_wiki_link);
     ce_set_caret_utf16(el, caret_utf16);
 }
 
-fn ce_refresh_wiki_highlighted(el: &web_sys::HtmlElement) {
+fn ce_refresh_wiki_highlighted<F>(el: &web_sys::HtmlElement, is_valid_wiki_link: &F)
+where
+    F: Fn(&str) -> bool,
+{
     let text = ce_text(el);
     let (caret_utf16, _caret_end_utf16, _len) = ce_selection_utf16(el);
-    ce_set_wiki_highlighted(el, &text, Some(caret_utf16));
+    ce_set_wiki_highlighted(el, &text, Some(caret_utf16), is_valid_wiki_link);
     ce_set_caret_utf16(el, caret_utf16);
 }
 
@@ -849,6 +899,14 @@ pub fn test_mount_outline_editor(root: &web_sys::HtmlElement, initial_text: &str
         .0
         .current_database_id
         .set(Some("db-test".to_string()));
+    app_ctx.0.notes.set(vec![Note {
+        id: note_id.clone(),
+        database_id: "db-test".to_string(),
+        title: "Test Page".to_string(),
+        content: String::new(),
+        created_at: String::new(),
+        updated_at: String::new(),
+    }]);
 
     let snapshot_key = format!("hulunote_note_snapshot::{}::{}", "db-test", note_id);
     let snapshot_value = serde_json::json!({
@@ -1100,36 +1158,72 @@ fn ensure_titles_loaded(app_state: &AppContext, ac: &AutocompleteCtx) {
     ac.titles_loading.set(true);
     ac.titles_cache_db.set(Some(db_id.clone()));
 
-    let api_client = app_state.0.api_client.get_untracked();
     let notes = app_state.0.notes.get_untracked();
 
     let ac2 = ac.clone();
     spawn_local(async move {
-        // 1) Existing note titles
-        let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        for n in notes {
-            if n.database_id == db_id && !n.title.trim().is_empty() {
-                set.insert(n.title);
-            }
-        }
-
-        // 2) Titles referenced via [[...]] across all navs in DB (includes unreferenced pages).
-        if let Ok(all_navs) = api_client.get_all_navs(&db_id).await {
-            for nav in all_navs {
-                if nav.is_delete {
-                    continue;
-                }
-                for t in extract_bidirectional_links(&nav.content) {
-                    if !t.trim().is_empty() {
-                        set.insert(t);
-                    }
-                }
-            }
-        }
-
-        ac2.titles_cache.set(set.into_iter().collect::<Vec<_>>());
+        ac2.titles_cache.set(note_titles_for_db(&notes, &db_id));
         ac2.titles_loading.set(false);
     });
+}
+
+fn note_titles_for_db(notes: &[Note], db_id: &str) -> Vec<String> {
+    let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for n in notes {
+        if n.database_id == db_id && !n.title.trim().is_empty() {
+            set.insert(n.title.clone());
+        }
+    }
+    set.into_iter().collect::<Vec<_>>()
+}
+
+fn update_wiki_autocomplete_state(
+    app_state: &AppContext,
+    ac: &AutocompleteCtx,
+    text: &str,
+    caret_utf16: u32,
+) {
+    let Some((start_utf16, q)) = wiki_autocomplete_query_at_caret(text, caret_utf16) else {
+        ac.ac_open.set(false);
+        ac.ac_start_utf16.set(None);
+        return;
+    };
+    ac.ac_query.set(q.clone());
+    ac.ac_start_utf16.set(Some(start_utf16));
+
+    ensure_titles_loaded(app_state, ac);
+
+    if ac.titles_loading.get_untracked() {
+        ac.ac_open.set(true);
+        ac.ac_index.set(0);
+        ac.ac_items.set(vec![]);
+        return;
+    }
+
+    let titles = ac.titles_cache.get_untracked();
+    let items = build_ac_items(&titles, &q);
+    if items.is_empty() {
+        ac.ac_open.set(false);
+        ac.ac_index.set(0);
+        return;
+    }
+
+    ac.ac_items.set(items);
+    ac.ac_index.set(0);
+    ac.ac_open.set(true);
+}
+
+fn wiki_autocomplete_query_at_caret(text: &str, caret_utf16: u32) -> Option<(u32, String)> {
+    let caret_byte = utf16_to_byte_idx(text, caret_utf16);
+    let prefix = &text[..caret_byte.min(text.len())];
+    let start_byte = prefix.rfind("[[")?;
+    if prefix[start_byte..].contains("]]") {
+        return None;
+    }
+    Some((
+        byte_idx_to_utf16(text, start_byte),
+        prefix[start_byte + 2..].to_string(),
+    ))
 }
 
 fn root_container_id(all: &[Nav]) -> Option<String> {
@@ -1624,8 +1718,8 @@ fn apply_local_draft_overlay_and_refresh_snapshot(
 
 fn restore_editor_focus_for_note(
     navs: &[Nav],
-    db_id: &str,
-    note_id: &str,
+    saved_cursor: Option<(String, u32)>,
+    preferred_nav_id: Option<&str>,
     editing_id: RwSignal<Option<String>>,
     editing_value: RwSignal<String>,
     editing_snapshot: RwSignal<Option<(String, String)>>,
@@ -1640,14 +1734,7 @@ fn restore_editor_focus_for_note(
         return;
     };
 
-    let picked = load_note_cursor(db_id, note_id)
-        .and_then(|saved| {
-            if visible_ids.iter().any(|id| id == &saved.nav_id) {
-                Some((saved.nav_id, saved.cursor_col))
-            } else {
-                None
-            }
-        })
+    let picked = pick_editor_focus_target(&visible_ids, saved_cursor, preferred_nav_id)
         .unwrap_or((first_visible_id, 0));
 
     let Some(nav) = navs.iter().find(|n| n.id == picked.0) else {
@@ -1658,6 +1745,28 @@ fn restore_editor_focus_for_note(
     editing_value.set(nav.content.clone());
     editing_snapshot.set(Some((nav.id.clone(), nav.content.clone())));
     target_cursor_col.set(Some(picked.1));
+}
+
+fn pick_editor_focus_target(
+    visible_ids: &[String],
+    saved_cursor: Option<(String, u32)>,
+    preferred_nav_id: Option<&str>,
+) -> Option<(String, u32)> {
+    let preferred = preferred_nav_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .filter(|id| visible_ids.iter().any(|x| x == *id))
+        .map(|id| (id.to_string(), 0));
+    if preferred.is_some() {
+        return preferred;
+    }
+
+    let saved = saved_cursor.filter(|(id, _)| visible_ids.iter().any(|x| x == id));
+    if saved.is_some() {
+        return saved;
+    }
+
+    visible_ids.first().cloned().map(|id| (id, 0))
 }
 
 fn set_navs_with_reconciled_editing(
@@ -1734,6 +1843,7 @@ pub fn OutlineEditor(
     // Autocomplete recompute effect.
     // This fixes the first-`[[` case where titles are still loading: we keep the menu open and
     // populate items as soon as the async title load completes (without requiring extra typing).
+    let app_state_for_highlight = app_state.clone();
     Effect::new(move |_| {
         let start = ac_start_utf16.get();
         if start.is_none() {
@@ -1839,8 +1949,9 @@ pub fn OutlineEditor(
                 {
                     restore_editor_focus_for_note(
                         &xs,
-                        &db_id_now,
-                        &id,
+                        load_note_cursor(&db_id_now, &id)
+                            .map(|saved| (saved.nav_id, saved.cursor_col)),
+                        focused_nav_id.get_untracked().as_deref(),
                         editing_id,
                         editing_value,
                         editing_snapshot,
@@ -1946,8 +2057,9 @@ pub fn OutlineEditor(
                     {
                         restore_editor_focus_for_note(
                             &xs,
-                            &db_id2,
-                            &id,
+                            load_note_cursor(&db_id2, &id)
+                                .map(|saved| (saved.nav_id, saved.cursor_col)),
+                            focused_nav_id.get_untracked().as_deref(),
                             editing_id,
                             editing_value,
                             editing_snapshot,
@@ -1992,8 +2104,9 @@ pub fn OutlineEditor(
                             {
                                 restore_editor_focus_for_note(
                                     &xs,
-                                    &db_id2,
-                                    &id,
+                                    load_note_cursor(&db_id2, &id)
+                                        .map(|saved| (saved.nav_id, saved.cursor_col)),
+                                    focused_nav_id.get_untracked().as_deref(),
                                     editing_id,
                                     editing_value,
                                     editing_snapshot,
@@ -2119,7 +2232,9 @@ pub fn OutlineEditor(
         let el = editing_ref.get();
         if let Some(el) = el {
             let he: web_sys::HtmlElement = el.unchecked_into();
-            ce_set_wiki_highlighted(&he, &editing_value.get_untracked(), None);
+            ce_set_wiki_highlighted(&he, &editing_value.get_untracked(), None, &|title| {
+                wiki_link_exists(&app_state_for_highlight, title)
+            });
         }
     });
 
@@ -3044,11 +3159,11 @@ pub fn OutlineNode(
                                                                                 && normalize_outline_page_title(&n.title)
                                                                                     == title_norm_now
                                                                         });
-                                                                    let link_button_class = "cursor-pointer group";
+                                                                    let link_button_class = "cursor-pointer group/wiki-link";
                                                                     let link_title_class = if link_exists {
-                                                                        "text-primary underline underline-offset-2 decoration-dotted group-hover:text-primary/80"
+                                                                        "text-primary underline underline-offset-2 decoration-dotted group-hover/wiki-link:text-primary/80"
                                                                     } else {
-                                                                        "text-muted-foreground underline underline-offset-2 decoration-dotted group-hover:text-muted-foreground/80"
+                                                                        "text-muted-foreground underline underline-offset-2 decoration-dotted group-hover/wiki-link:text-muted-foreground/80"
                                                                     };
 
                                                                     let title_for_click = title_raw.clone();
@@ -3500,7 +3615,11 @@ pub fn OutlineNode(
 
                                                 let (start_utf16, end_utf16, _len) = ce_selection_utf16(&el);
                                                 let current = ce_view_text(&el);
-                                                let is_insert_text_input = input_type == "insertText";
+                                                let input_data = ev.data().unwrap_or_default();
+                                                let is_insert_text_input = should_treat_beforeinput_as_insert_text(
+                                                    &input_type,
+                                                    &input_data,
+                                                );
                                                 let is_insert_from_drop = input_type == "insertFromDrop";
 
                                                 let state = EditorState::new(current, start_utf16);
@@ -3510,7 +3629,7 @@ pub fn OutlineNode(
                                                         EditorIntent::ReplaceRange {
                                                             start_utf16,
                                                             end_utf16,
-                                                            text: ev.data().unwrap_or_default(),
+                                                            text: input_data.clone(),
                                                         },
                                                     )
                                                 } else if is_insert_from_drop {
@@ -3551,8 +3670,22 @@ pub fn OutlineNode(
                                                     &el,
                                                     &next_state.text,
                                                     next_state.caret_utf16,
+                                                    &|title| {
+                                                        let app_state_now = app_state_sv.get_value();
+                                                        wiki_link_exists(&app_state_now, title)
+                                                    },
                                                 );
                                                 editing_value.set(next_state.text.clone());
+                                                {
+                                                    let ac = ac_sv.get_value();
+                                                    let app_state = app_state_sv.get_value();
+                                                    update_wiki_autocomplete_state(
+                                                        &app_state,
+                                                        &ac,
+                                                        &next_state.text,
+                                                        next_state.caret_utf16,
+                                                    );
+                                                }
 
                                                 let nav_id = nav_id_sv.get_value();
                                                 let _ = sync_sv.try_with_value(|s| s.on_nav_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &nav_id, &next_state.text));
@@ -3595,8 +3728,22 @@ pub fn OutlineNode(
                                                     &el,
                                                     &next_state.text,
                                                     next_state.caret_utf16,
+                                                    &|title| {
+                                                        let app_state_now = app_state_sv.get_value();
+                                                        wiki_link_exists(&app_state_now, title)
+                                                    },
                                                 );
                                                 editing_value.set(next_state.text.clone());
+                                                {
+                                                    let ac = ac_sv.get_value();
+                                                    let app_state = app_state_sv.get_value();
+                                                    update_wiki_autocomplete_state(
+                                                        &app_state,
+                                                        &ac,
+                                                        &next_state.text,
+                                                        next_state.caret_utf16,
+                                                    );
+                                                }
                                                 let nav_id = nav_id_sv.get_value();
                                                 let _ = sync_sv.try_with_value(|s| s.on_nav_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &nav_id, &next_state.text));
                                             }
@@ -3639,7 +3786,13 @@ pub fn OutlineNode(
                                                     let len = v.encode_utf16().count() as u32;
                                                     let caret = caret_utf16.min(len);
                                                     ce_set_text_and_restore_caret_with_highlight(
-                                                        &el, &v, caret,
+                                                        &el,
+                                                        &v,
+                                                        caret,
+                                                        &|title| {
+                                                            let app_state_now = app_state_sv.get_value();
+                                                            wiki_link_exists(&app_state_now, title)
+                                                        },
                                                     );
                                                     v = ce_view_text(&el);
                                                     editing_value.set(v.clone());
@@ -3648,55 +3801,14 @@ pub fn OutlineNode(
                                                     v
                                                 };
 
-                                                // Autocomplete: detect an unclosed `[[...` immediately before the caret.
-                                                let caret_byte = utf16_to_byte_idx(&v, caret_utf16);
-                                                let prefix = &v[..caret_byte.min(v.len())];
-
                                                 let ac = ac_sv.get_value();
                                                 let app_state = app_state_sv.get_value();
-
-                                                let Some(start_byte) = prefix.rfind("[[") else {
-                                                    ac.ac_open.set(false);
-                                                    ac.ac_start_utf16.set(None);
-                                                    return;
-                                                };
-
-                                                // If the user already closed the link before the caret, don't autocomplete.
-                                                if prefix[start_byte..].contains("]]") {
-                                                    ac.ac_open.set(false);
-                                                    ac.ac_start_utf16.set(None);
-                                                    return;
-                                                }
-
-                                                let q = prefix[start_byte + 2..].to_string();
-                                                ac.ac_query.set(q.clone());
-                                                ac.ac_start_utf16
-                                                    .set(Some(byte_idx_to_utf16(&v, start_byte)));
-
-                                                // Load titles lazily (notes + bidirectional links across DB).
-                                                ensure_titles_loaded(&app_state, &ac);
-
-                                                // If titles are still loading, keep the menu open and let the
-                                                // recompute Effect populate items once loading completes.
-                                                if ac.titles_loading.get_untracked() {
-                                                    ac.ac_open.set(true);
-                                                    ac.ac_index.set(0);
-                                                    ac.ac_items.set(vec![]);
-                                                    return;
-                                                }
-
-                                                let titles = ac.titles_cache.get_untracked();
-                                                let items = build_ac_items(&titles, &q);
-
-                                                if items.is_empty() {
-                                                    ac.ac_open.set(false);
-                                                    ac.ac_index.set(0);
-                                                    return;
-                                                }
-
-                                                ac.ac_items.set(items);
-                                                ac.ac_index.set(0);
-                                                ac.ac_open.set(true);
+                                                update_wiki_autocomplete_state(
+                                                    &app_state,
+                                                    &ac,
+                                                    &v,
+                                                    caret_utf16,
+                                                );
                                             }
                                             on:focus=move |ev: web_sys::FocusEvent| {
                                                 let Some(el) = ev
@@ -3716,7 +3828,10 @@ pub fn OutlineNode(
                                                 };
 
                                                 ce_set_caret_utf16(&el, col);
-                                                ce_refresh_wiki_highlighted(&el);
+                                                ce_refresh_wiki_highlighted(&el, &|title| {
+                                                    let app_state_now = app_state_sv.get_value();
+                                                    wiki_link_exists(&app_state_now, title)
+                                                });
                                             }
                                             on:compositionstart=move |_ev: web_sys::CompositionEvent| {
                                                 if let Some(el) = editing_ref.get_untracked().map(|n| n.unchecked_into::<web_sys::HtmlElement>()) {
@@ -3754,7 +3869,13 @@ pub fn OutlineNode(
                                                     composing_start_caret.set(None);
                                                     // Normalize back into controlled visual-line DOM once IME commits.
                                                     ce_set_text_and_restore_caret_with_highlight(
-                                                        &el, &v, caret_utf16,
+                                                        &el,
+                                                        &v,
+                                                        caret_utf16,
+                                                        &|title| {
+                                                            let app_state_now = app_state_sv.get_value();
+                                                            wiki_link_exists(&app_state_now, title)
+                                                        },
                                                     );
                                                     schedule_note_cursor_save(
                                                         cursor_save_timer_id,
@@ -3773,7 +3894,10 @@ pub fn OutlineNode(
                                                             &v,
                                                         )
                                                     });
-                                                    ce_refresh_wiki_highlighted(&el);
+                                                    ce_refresh_wiki_highlighted(&el, &|title| {
+                                                        let app_state_now = app_state_sv.get_value();
+                                                        wiki_link_exists(&app_state_now, title)
+                                                    });
                                                 }
                                             }
                                             // on:blur only persists content; it does NOT decide whether we should exit
@@ -3892,7 +4016,10 @@ pub fn OutlineNode(
                                                 // Re-highlighting rebuilds DOM and restores a collapsed caret.
                                                 // Skip it when a range selection exists to preserve user selection.
                                                 if caret_utf16 == caret_end_utf16 {
-                                                    ce_refresh_wiki_highlighted(&el);
+                                                    ce_refresh_wiki_highlighted(&el, &|title| {
+                                                        let app_state_now = app_state_sv.get_value();
+                                                        wiki_link_exists(&app_state_now, title)
+                                                    });
                                                 }
                                             }
                                             on:mouseup=move |ev: web_sys::MouseEvent| {
@@ -3912,7 +4039,10 @@ pub fn OutlineNode(
                                                     caret_utf16,
                                                 );
                                                 if caret_utf16 == caret_end_utf16 {
-                                                    ce_refresh_wiki_highlighted(&el);
+                                                    ce_refresh_wiki_highlighted(&el, &|title| {
+                                                        let app_state_now = app_state_sv.get_value();
+                                                        wiki_link_exists(&app_state_now, title)
+                                                    });
                                                 }
                                             }
                                             on:focusout=move |ev: web_sys::FocusEvent| {
@@ -4077,6 +4207,10 @@ pub fn OutlineNode(
                                                                                 .count()
                                                                                 as u32)
                                                                             + 2,
+                                                                        &|title| {
+                                                                            let app_state_now = app_state_sv.get_value();
+                                                                            wiki_link_exists(&app_state_now, title)
+                                                                        },
                                                                     );
                                                                     editing_value.set(next.clone());
 
@@ -4820,6 +4954,10 @@ pub fn OutlineNode(
                                                                     &el,
                                                                     &next.text,
                                                                     next.caret_utf16,
+                                                                    &|title| {
+                                                                        let app_state_now = app_state_sv.get_value();
+                                                                        wiki_link_exists(&app_state_now, title)
+                                                                    },
                                                                 );
                                                             } else {
                                                                 ce_set_caret_utf16(&el, next.caret_utf16);
@@ -4828,6 +4966,16 @@ pub fn OutlineNode(
                                                             shift_enter_return_caret
                                                                 .set(next.remembered_caret_utf16);
                                                             target_cursor_col.set(Some(next.caret_utf16));
+                                                            {
+                                                                let ac = ac_sv.get_value();
+                                                                let app_state = app_state_sv.get_value();
+                                                                update_wiki_autocomplete_state(
+                                                                    &app_state,
+                                                                    &ac,
+                                                                    &next.text,
+                                                                    next.caret_utf16,
+                                                                );
+                                                            }
 
                                                             let nav_id_now = nav_id_sv.get_value();
                                                             let _ = sync_sv.try_with_value(|s| {
@@ -4883,10 +5031,24 @@ pub fn OutlineNode(
                                                                 &el,
                                                                 &next.text,
                                                                 next.caret_utf16,
+                                                                &|title| {
+                                                                    let app_state_now = app_state_sv.get_value();
+                                                                    wiki_link_exists(&app_state_now, title)
+                                                                },
                                                             );
                                                         }
                                                         editing_value.set(next.text.clone());
                                                         target_cursor_col.set(Some(next.caret_utf16));
+                                                        {
+                                                            let ac = ac_sv.get_value();
+                                                            let app_state = app_state_sv.get_value();
+                                                            update_wiki_autocomplete_state(
+                                                                &app_state,
+                                                                &ac,
+                                                                &next.text,
+                                                                next.caret_utf16,
+                                                            );
+                                                        }
                                                         let nav_id_now = nav_id_sv.get_value();
                                                         let _ = sync_sv.try_with_value(|s| {
                                                             s.on_nav_changed_for_scope(&db_id_sv.get_value(), &note_id_sv.get_value(), &nav_id_now, &next.text);
@@ -4915,6 +5077,10 @@ pub fn OutlineNode(
                                                                     &el,
                                                                     &next.text,
                                                                     next.caret_utf16,
+                                                                    &|title| {
+                                                                        let app_state_now = app_state_sv.get_value();
+                                                                        wiki_link_exists(&app_state_now, title)
+                                                                    },
                                                                 );
                                                             } else {
                                                                 ce_set_caret_utf16(&el, next.caret_utf16);
@@ -4923,6 +5089,16 @@ pub fn OutlineNode(
                                                             shift_enter_return_caret
                                                                 .set(next.remembered_caret_utf16);
                                                             target_cursor_col.set(Some(next.caret_utf16));
+                                                            {
+                                                                let ac = ac_sv.get_value();
+                                                                let app_state = app_state_sv.get_value();
+                                                                update_wiki_autocomplete_state(
+                                                                    &app_state,
+                                                                    &ac,
+                                                                    &next.text,
+                                                                    next.caret_utf16,
+                                                                );
+                                                            }
 
                                                             let nav_id_now = nav_id_sv.get_value();
                                                             let _ = sync_sv.try_with_value(|s| {
@@ -4965,6 +5141,10 @@ pub fn OutlineNode(
                                                             el,
                                                             &left_content,
                                                             left_caret,
+                                                            &|title| {
+                                                                let app_state_now = app_state_sv.get_value();
+                                                                wiki_link_exists(&app_state_now, title)
+                                                            },
                                                         );
                                                     }
 
@@ -5018,6 +5198,16 @@ pub fn OutlineNode(
                                                     editing_snapshot
                                                         .set(Some((new_id.clone(), right_content.clone())));
                                                     target_cursor_col.set(Some(0));
+                                                    {
+                                                        let ac = ac_sv.get_value();
+                                                        let app_state = app_state_sv.get_value();
+                                                        update_wiki_autocomplete_state(
+                                                            &app_state,
+                                                            &ac,
+                                                            &right_content,
+                                                            0,
+                                                        );
+                                                    }
 
                                                     // Persist new node metadata/content to drafts immediately.
                                                     if let Some(n) = navs
@@ -5157,6 +5347,10 @@ pub fn OutlineNode(
                                                                                                         + 2
                                                                                                         + (title_for_insert.encode_utf16().count() as u32)
                                                                                                         + 2,
+                                                                                                    &|title| {
+                                                                                                        let app_state_now = app_state_sv.get_value();
+                                                                                                        wiki_link_exists(&app_state_now, title)
+                                                                                                    },
                                                                                                 );
                                                                                                 editing_value.set(next.clone());
 
@@ -5664,14 +5858,74 @@ mod tests {
 
     #[test]
     fn wiki_highlight_renders_markdown_when_caret_outside_token_range() {
-        let html = wiki_highlight_html("a **bold** z", Some(0));
+        let html = wiki_highlight_html("a **bold** z", Some(0), &|_title| false);
         assert!(html.contains("<strong>bold</strong>"));
     }
 
     #[test]
     fn wiki_highlight_keeps_raw_markdown_when_caret_inside_token_range() {
-        let html = wiki_highlight_html("a **bold** z", Some(4));
+        let html = wiki_highlight_html("a **bold** z", Some(4), &|_title| false);
         assert!(html.contains("**bold**"));
         assert!(!html.contains("<strong>bold</strong>"));
+    }
+
+    #[test]
+    fn wiki_highlight_checks_validity_for_each_link() {
+        let seen = std::cell::RefCell::new(Vec::<String>::new());
+        let html = wiki_highlight_html("x [[Missing Page]] y [[Existing]]", Some(0), &|title| {
+            seen.borrow_mut().push(title.to_string());
+            title == "Existing"
+        });
+
+        assert_eq!(
+            seen.into_inner(),
+            vec!["Missing Page".to_string(), "Existing".to_string()]
+        );
+        assert!(html.contains("Missing Page"));
+        assert!(html.contains("Existing"));
+    }
+
+    #[test]
+    fn wiki_highlight_output_changes_with_link_validity() {
+        let valid_html = wiki_highlight_html("[[Page]]", Some(0), &|title| title == "Page");
+        let invalid_html = wiki_highlight_html("[[Page]]", Some(0), &|_title| false);
+        assert_ne!(valid_html, invalid_html);
+    }
+
+    #[test]
+    fn beforeinput_empty_type_with_text_is_treated_as_insert_text() {
+        assert!(should_treat_beforeinput_as_insert_text("", "["));
+    }
+
+    #[test]
+    fn beforeinput_empty_type_without_text_is_not_insert_text() {
+        assert!(!should_treat_beforeinput_as_insert_text("", ""));
+    }
+
+    #[test]
+    fn wiki_autocomplete_query_tracks_after_deletion() {
+        let before = wiki_autocomplete_query_at_caret("[[ab", 4);
+        let after = wiki_autocomplete_query_at_caret("[[a", 3);
+        assert_eq!(before, Some((0, "ab".to_string())));
+        assert_eq!(after, Some((0, "a".to_string())));
+    }
+
+    #[test]
+    fn wiki_autocomplete_query_closes_when_trigger_removed() {
+        assert_eq!(wiki_autocomplete_query_at_caret("[", 1), None);
+    }
+
+    #[test]
+    fn pick_editor_focus_target_prefers_backlink_target_over_saved_cursor() {
+        let visible_ids = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let picked = pick_editor_focus_target(&visible_ids, Some(("a".to_string(), 7)), Some("b"));
+        assert_eq!(picked, Some(("b".to_string(), 0)));
+    }
+
+    #[test]
+    fn pick_editor_focus_target_falls_back_to_saved_cursor_when_no_target() {
+        let visible_ids = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let picked = pick_editor_focus_target(&visible_ids, Some(("c".to_string(), 9)), None);
+        assert_eq!(picked, Some(("c".to_string(), 9)));
     }
 }
