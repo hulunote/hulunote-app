@@ -4,7 +4,7 @@ use crate::components::ui::{
 };
 use crate::drafts::{load_note_snapshot, save_note_snapshot};
 use crate::editor::OutlineEditor;
-use crate::linking::extract_bidirectional_links;
+use crate::linking::{extract_bidirectional_links, parse_bidirectional_tokens, BidirectionalToken};
 use crate::models::Nav;
 use crate::state::{AppContext, DbUiActions, FocusOwner};
 use crate::storage::{
@@ -24,6 +24,31 @@ use leptos_router::params::Params;
 use wasm_bindgen::JsCast;
 
 const LOCAL_PENDING_NOTE_CREATED_AT: &str = "local-pending";
+
+fn escape_html_for_backlinks(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn render_backlink_line_html(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for t in parse_bidirectional_tokens(input) {
+        match t {
+            BidirectionalToken::Text(s) => out.push_str(&escape_html_for_backlinks(&s)),
+            BidirectionalToken::Link(label) => {
+                out.push_str(
+                    "<span class=\"text-primary underline underline-offset-2 decoration-dotted decoration-current\">",
+                );
+                out.push_str(&escape_html_for_backlinks(&label));
+                out.push_str("</span>");
+            }
+        }
+    }
+    out
+}
 
 #[component]
 pub fn LoginPage() -> impl IntoView {
@@ -2657,7 +2682,7 @@ pub fn NotePage() -> impl IntoView {
                                                                         class="inline-block max-w-full truncate text-muted-foreground hover:underline"
                                                                         title="Jump to this outline item"
                                                                     >
-                                                                        {line_text}
+                                                                        <span inner_html=render_backlink_line_html(&line_text)></span>
                                                                     </a>
                                                                 </div>
                                                             }

@@ -415,12 +415,29 @@ fn should_treat_beforeinput_as_insert_text(input_type: &str, input_data: &str) -
     input_type == "insertText" || (input_type.is_empty() && !input_data.is_empty())
 }
 
+fn should_navigate_wiki_link_click(
+    caret_start_utf16: u32,
+    caret_end_utf16: u32,
+    link_start_utf16: u32,
+    link_end_utf16: u32,
+) -> bool {
+    if caret_start_utf16 != caret_end_utf16 {
+        return true;
+    }
+    // Intentionally treat the right boundary as inside the link-editing range.
+    // Product behavior defines `[[xxx]]|` (caret immediately after `]]`) as still
+    // being in the non-clickable edit zone, so navigation must stay disabled here.
+    // This is deliberate and differs from the common half-open `[start, end)` model.
+    caret_start_utf16 < link_start_utf16 || caret_start_utf16 > link_end_utf16
+}
+
 fn wiki_highlight_html<F>(s: &str, caret_utf16: Option<u32>, is_valid_wiki_link: &F) -> String
 where
     F: Fn(&str) -> bool,
 {
     let caret_byte = caret_utf16.map(|p| utf16_to_byte_idx(s, p));
     let mut cursor = 0usize;
+    let mut cursor_utf16 = 0u32;
     let mut out = String::new();
     for t in parse_bidirectional_tokens(s) {
         match t.clone() {
@@ -438,22 +455,51 @@ where
                     &txt, seg_caret,
                 ));
                 cursor = seg_end;
+                cursor_utf16 += txt.encode_utf16().count() as u32;
             }
             BidirectionalToken::Link(label) => {
                 // Keep caret-byte mapping aligned with source bytes.
                 cursor += 2 + label.len() + 2;
+                let link_start_utf16 = cursor_utf16;
+                let link_end_utf16 = link_start_utf16 + 2 + label.encode_utf16().count() as u32 + 2;
+                cursor_utf16 = link_end_utf16;
                 if label.is_empty() {
                     out.push_str("[[]]");
                 } else {
                     let link_class = if is_valid_wiki_link(&label) {
-                        "text-primary underline underline-offset-2 decoration-dotted"
+                        "text-primary"
                     } else {
-                        "text-muted-foreground underline underline-offset-2 decoration-dotted"
+                        "text-muted-foreground"
+                    };
+                    let clickable = caret_utf16
+                        .map(|caret| {
+                            should_navigate_wiki_link_click(
+                                caret,
+                                caret,
+                                link_start_utf16,
+                                link_end_utf16,
+                            )
+                        })
+                        .unwrap_or(true);
+                    let bracket_class = if clickable {
+                        "text-[0px] leading-none text-transparent select-none"
+                    } else {
+                        "text-muted-foreground"
+                    };
+                    let title_class = if clickable {
+                        format!("{} underline underline-offset-2", link_class)
+                    } else {
+                        link_class.to_string()
                     };
                     out.push_str(&format!(
-                        "<span class=\"text-muted-foreground\">[[</span><span class=\"{}\">{}</span><span class=\"text-muted-foreground\">]]</span>",
-                        link_class,
+                        "<span data-wiki-link=\"1\" data-wiki-title=\"{}\" data-wiki-start-utf16=\"{}\" data-wiki-end-utf16=\"{}\" class=\"group/wiki-link\"><span data-wiki-bracket=\"1\" class=\"{}\">[[</span><span data-wiki-link-title=\"1\" class=\"{} group-hover/wiki-link:opacity-80\">{}</span><span data-wiki-bracket=\"1\" class=\"{}\">]]</span></span>",
                         escape_html(&label),
+                        link_start_utf16,
+                        link_end_utf16,
+                        bracket_class,
+                        title_class,
+                        escape_html(&label),
+                        bracket_class,
                     ));
                 }
             }
@@ -3240,9 +3286,9 @@ pub fn OutlineNode(
                                                                         );
                                                                     let link_button_class = "cursor-pointer group/wiki-link";
                                                                     let link_title_class = if link_exists {
-                                                                        "text-primary underline underline-offset-2 decoration-dotted group-hover/wiki-link:text-primary/80"
+                                                                        "text-primary underline underline-offset-2 group-hover/wiki-link:text-primary/80"
                                                                     } else {
-                                                                        "text-muted-foreground underline underline-offset-2 decoration-dotted group-hover/wiki-link:text-muted-foreground/80"
+                                                                        "text-muted-foreground underline underline-offset-2 group-hover/wiki-link:text-muted-foreground/80"
                                                                     };
 
                                                                     let title_for_click = title_raw.clone();
@@ -3572,9 +3618,7 @@ pub fn OutlineNode(
                                                                                     });
                                                                                 }
                                                                             >
-                                                                                <span class="text-muted-foreground">"[["</span>
                                                                                 <span class=link_title_class>{title_display}</span>
-                                                                                <span class="text-muted-foreground">"]]"</span>
                                                                             </button>
 
                                                                             {if link_exists && !is_self_link {
@@ -3594,7 +3638,7 @@ pub fn OutlineNode(
                                                                                                 schedule_preview_hide();
                                                                                             }
                                                                                         >
-                                                                                            <div class="font-medium truncate">{title_preview_title.clone()}</div>
+                                                                                            <div class="font-medium truncate"><span class="mr-2">"🔗"</span>{title_preview_title.clone()}</div>
                                                                                             <Show when=move || preview_loading.get() fallback=|| ().into_view()>
                                                                                                 <div class="mt-2 text-muted-foreground">"Loading…"</div>
                                                                                             </Show>
@@ -3643,7 +3687,7 @@ pub fn OutlineNode(
                                                                                                 schedule_preview_hide();
                                                                                             }
                                                                                         >
-                                                                                            <div class="font-medium truncate">{title_preview_title.clone()}</div>
+                                                                                            <div class="font-medium truncate"><span class="mr-2">"🔗"</span>{title_preview_title.clone()}</div>
                                                                                             <div class="mt-2 text-muted-foreground">
                                                                                                 "Click link to create this note."
                                                                                             </div>
@@ -3666,6 +3710,14 @@ pub fn OutlineNode(
                                         .into_any();
                                     }
 
+                                    let editing_link_preview_open: RwSignal<bool> = RwSignal::new(false);
+                                    let editing_link_preview_x: RwSignal<i32> = RwSignal::new(0);
+                                    let editing_link_preview_y: RwSignal<i32> = RwSignal::new(0);
+                                    let editing_link_preview_title: RwSignal<String> =
+                                        RwSignal::new(String::new());
+                                    let editing_link_preview_exists: RwSignal<bool> =
+                                        RwSignal::new(false);
+
                                     view! {
                                         <div class="relative">
                                         <div class="hidden"></div>
@@ -3680,6 +3732,267 @@ pub fn OutlineNode(
                                             attr:data-note-id=note_id_sv.get_value()
                                             style=format!("anchor-name: {}", ac_anchor_name_sv.get_value())
                                             class="relative z-10 min-h-[22px] w-full min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1 py-0.5 text-sm leading-[22px] text-foreground caret-foreground outline-none whitespace-pre-wrap"
+                                            on:mousemove=move |ev: web_sys::MouseEvent| {
+                                                let Some(editor_el) = ev
+                                                    .current_target()
+                                                    .and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
+                                                else {
+                                                    return;
+                                                };
+                                                let target_el = ev
+                                                    .target()
+                                                    .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                                                    .or_else(|| {
+                                                        ev.target()
+                                                            .and_then(|t| t.dyn_into::<web_sys::Node>().ok())
+                                                            .and_then(|n| n.parent_element())
+                                                    });
+                                                let Some(target_el) = target_el else {
+                                                    let _ = editor_el.style().set_property("cursor", "text");
+                                                    editing_link_preview_open.set(false);
+                                                    return;
+                                                };
+                                                let Some(link_el) = target_el
+                                                    .closest("[data-wiki-link='1']")
+                                                    .ok()
+                                                    .flatten()
+                                                else {
+                                                    let _ = editor_el.style().set_property("cursor", "text");
+                                                    editing_link_preview_open.set(false);
+                                                    return;
+                                                };
+                                                let editor_node: web_sys::Node =
+                                                    editor_el.clone().unchecked_into();
+                                                let link_node: web_sys::Node =
+                                                    link_el.clone().unchecked_into();
+                                                if !editor_node.contains(Some(&link_node)) {
+                                                    let _ = editor_el.style().set_property("cursor", "text");
+                                                    editing_link_preview_open.set(false);
+                                                    return;
+                                                }
+
+                                                let link_start_utf16 = link_el
+                                                    .get_attribute("data-wiki-start-utf16")
+                                                    .and_then(|v| v.parse::<u32>().ok());
+                                                let link_end_utf16 = link_el
+                                                    .get_attribute("data-wiki-end-utf16")
+                                                    .and_then(|v| v.parse::<u32>().ok());
+                                                let title = link_el
+                                                    .get_attribute("data-wiki-title")
+                                                    .unwrap_or_default();
+                                                if title.trim().is_empty() {
+                                                    let _ = editor_el.style().set_property("cursor", "text");
+                                                    editing_link_preview_open.set(false);
+                                                    return;
+                                                }
+
+                                                let mut clickable = true;
+                                                if let (Some(start), Some(end)) =
+                                                    (link_start_utf16, link_end_utf16)
+                                                {
+                                                    let (caret_start, caret_end, _len) =
+                                                        ce_selection_utf16(&editor_el);
+                                                    clickable = should_navigate_wiki_link_click(
+                                                        caret_start,
+                                                        caret_end,
+                                                        start,
+                                                        end,
+                                                    );
+                                                }
+                                                let _ = editor_el.style().set_property(
+                                                    "cursor",
+                                                    if clickable { "pointer" } else { "text" },
+                                                );
+                                                if !clickable {
+                                                    editing_link_preview_open.set(false);
+                                                    return;
+                                                }
+
+                                                let app_state_now = app_state_sv.get_value();
+                                                let db_id_now = app_state_now
+                                                    .0
+                                                    .current_database_id
+                                                    .get_untracked()
+                                                    .unwrap_or_default();
+                                                let current_note_id_now = note_id_sv.get_value();
+                                                let notes_now = app_state_now.0.notes.get_untracked();
+                                                let (exists, is_self) = resolve_wiki_link_target(
+                                                    &notes_now,
+                                                    &db_id_now,
+                                                    &current_note_id_now,
+                                                    &title,
+                                                );
+                                                if is_self {
+                                                    editing_link_preview_open.set(false);
+                                                    return;
+                                                }
+
+                                                editing_link_preview_title.set(title);
+                                                editing_link_preview_exists.set(exists);
+                                                editing_link_preview_x.set(ev.client_x() + 12);
+                                                editing_link_preview_y.set(ev.client_y() + 16);
+                                                editing_link_preview_open.set(true);
+                                            }
+                                            on:mouseleave=move |_ev: web_sys::MouseEvent| {
+                                                if let Some(editor_el) = editing_ref
+                                                    .get_untracked()
+                                                    .and_then(|n| n.dyn_into::<web_sys::HtmlElement>().ok())
+                                                {
+                                                    let _ = editor_el.style().set_property("cursor", "text");
+                                                }
+                                                editing_link_preview_open.set(false);
+                                            }
+                                            on:mousedown=move |ev: web_sys::MouseEvent| {
+                                                if ev.button() != 0 {
+                                                    return;
+                                                }
+                                                let Some(editor_el) = ev
+                                                    .current_target()
+                                                    .and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
+                                                else {
+                                                    return;
+                                                };
+
+                                                let target_el = ev
+                                                    .target()
+                                                    .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                                                    .or_else(|| {
+                                                        ev.target()
+                                                            .and_then(|t| t.dyn_into::<web_sys::Node>().ok())
+                                                            .and_then(|n| n.parent_element())
+                                                    });
+                                                let Some(target_el) = target_el else {
+                                                    return;
+                                                };
+                                                let Some(link_el) = target_el
+                                                    .closest("[data-wiki-link='1']")
+                                                    .ok()
+                                                    .flatten()
+                                                else {
+                                                    return;
+                                                };
+                                                let editor_node: web_sys::Node = editor_el.clone().unchecked_into();
+                                                let link_node: web_sys::Node = link_el.clone().unchecked_into();
+                                                if !editor_node.contains(Some(&link_node)) {
+                                                    return;
+                                                }
+
+                                                let link_start_utf16 = link_el
+                                                    .get_attribute("data-wiki-start-utf16")
+                                                    .and_then(|v| v.parse::<u32>().ok());
+                                                let link_end_utf16 = link_el
+                                                    .get_attribute("data-wiki-end-utf16")
+                                                    .and_then(|v| v.parse::<u32>().ok());
+                                                let title = link_el
+                                                    .get_attribute("data-wiki-title")
+                                                    .unwrap_or_default();
+                                                if title.trim().is_empty() {
+                                                    return;
+                                                }
+                                                if let (Some(start), Some(end)) =
+                                                    (link_start_utf16, link_end_utf16)
+                                                {
+                                                    let (caret_start, caret_end, _len) =
+                                                        ce_selection_utf16(&editor_el);
+                                                    if !should_navigate_wiki_link_click(
+                                                        caret_start,
+                                                        caret_end,
+                                                        start,
+                                                        end,
+                                                    ) {
+                                                        return;
+                                                    }
+                                                }
+
+                                                ev.prevent_default();
+                                                ev.stop_propagation();
+
+                                                let title_norm = normalize_outline_page_title(&title);
+                                                let db_id = app_state_sv
+                                                    .get_value()
+                                                    .0
+                                                    .current_database_id
+                                                    .get_untracked()
+                                                    .unwrap_or_default();
+                                                if db_id.trim().is_empty() {
+                                                    return;
+                                                }
+
+                                                let app_state_click = app_state_sv.get_value();
+                                                let api_client = app_state_click.0.api_client.get_untracked();
+                                                let navigate = navigate_sv.get_value();
+                                                spawn_local(async move {
+                                                    let find_existing_id = |notes: &[Note]| {
+                                                        notes
+                                                            .iter()
+                                                            .find(|n| {
+                                                                n.database_id == db_id
+                                                                    && normalize_outline_page_title(&n.title)
+                                                                        == title_norm
+                                                            })
+                                                            .map(|n| n.id.clone())
+                                                    };
+
+                                                    if let Some(id) =
+                                                        find_existing_id(&app_state_click.0.notes.get_untracked())
+                                                    {
+                                                        navigate(
+                                                            &format!("/db/{}/note/{}", db_id, id),
+                                                            leptos_router::NavigateOptions::default(),
+                                                        );
+                                                        return;
+                                                    }
+
+                                                    if let Ok(notes) = api_client.get_all_note_list(&db_id).await {
+                                                        app_state_click.0.notes.set(notes.clone());
+                                                        if let Some(id) = find_existing_id(&notes) {
+                                                            navigate(
+                                                                &format!("/db/{}/note/{}", db_id, id),
+                                                                leptos_router::NavigateOptions::default(),
+                                                            );
+                                                            return;
+                                                        }
+                                                    }
+
+                                                    let note_id = crate::util::new_client_uuid();
+                                                    let root_nav_id = crate::util::new_client_uuid();
+                                                    match api_client
+                                                        .create_note(
+                                                            &db_id,
+                                                            &title,
+                                                            Some(&note_id),
+                                                            Some(&root_nav_id),
+                                                        )
+                                                        .await
+                                                    {
+                                                        Ok(note) => {
+                                                            if note.id.trim().is_empty() {
+                                                                leptos::logging::log!(
+                                                                    "[editor] create_note returned empty id for title={}",
+                                                                    title
+                                                                );
+                                                                return;
+                                                            }
+                                                            app_state_click.0.notes.update(|xs| {
+                                                                if !xs.iter().any(|n| n.id == note.id) {
+                                                                    xs.push(note.clone());
+                                                                }
+                                                            });
+                                                            navigate(
+                                                                &format!("/db/{}/note/{}", db_id, note.id),
+                                                                leptos_router::NavigateOptions::default(),
+                                                            );
+                                                        }
+                                                        Err(e) => {
+                                                            leptos::logging::log!(
+                                                                "[editor] create_note failed for title={}: {}",
+                                                                title,
+                                                                e
+                                                            );
+                                                        }
+                                                    }
+                                                });
+                                            }
                                             on:beforeinput=move |ev: web_sys::InputEvent| {
                                                 let input_type = ev.input_type();
                                                 if is_composing.get_untracked() {
@@ -5278,6 +5591,35 @@ pub fn OutlineNode(
                                         >
                                         </div>
 
+                                        <Show
+                                            when=move || editing_link_preview_open.get()
+                                            fallback=|| ().into_view()
+                                        >
+                                            <div
+                                                class="pointer-events-none fixed z-[1000000] w-[22rem] max-w-[90vw] rounded-md border border-border-strong bg-card text-card-foreground p-3 text-xs shadow-lg"
+                                                style=move || {
+                                                    format!(
+                                                        "left: {}px; top: {}px;",
+                                                        editing_link_preview_x.get(),
+                                                        editing_link_preview_y.get()
+                                                    )
+                                                }
+                                            >
+                                                <div class="font-medium truncate">
+                                                    <span class="mr-2">"🔗"</span>{move || editing_link_preview_title.get()}
+                                                </div>
+                                                <div class="mt-2 text-muted-foreground">
+                                                    {move || {
+                                                        if editing_link_preview_exists.get() {
+                                                            "Click link to open this note.".to_string()
+                                                        } else {
+                                                            "Click link to create this note.".to_string()
+                                                        }
+                                                    }}
+                                                </div>
+                                            </div>
+                                        </Show>
+
                                         {move || {
                                             let popover_id = ac_popover_id_sv.get_value();
                                             let anchor_name = ac_anchor_name_sv.get_value();
@@ -5921,6 +6263,50 @@ mod tests {
         let valid_html = wiki_highlight_html("[[Page]]", Some(0), &|title| title == "Page");
         let invalid_html = wiki_highlight_html("[[Page]]", Some(0), &|_title| false);
         assert_ne!(valid_html, invalid_html);
+    }
+
+    #[test]
+    fn wiki_highlight_uses_clickable_state_styles_when_caret_is_outside_link() {
+        let html = wiki_highlight_html("x [[Page]]", Some(1), &|_title| true);
+        assert!(html.contains(
+            "data-wiki-bracket=\"1\" class=\"text-[0px] leading-none text-transparent select-none\""
+        ));
+        assert!(html.contains(
+            "data-wiki-link-title=\"1\" class=\"text-primary underline underline-offset-2"
+        ));
+    }
+
+    #[test]
+    fn wiki_highlight_uses_editing_state_styles_when_caret_is_inside_link() {
+        let html = wiki_highlight_html("x [[Page]]", Some(2), &|_title| true);
+        assert!(html.contains("data-wiki-bracket=\"1\" class=\"text-muted-foreground\""));
+        assert!(!html.contains(
+            "data-wiki-link-title=\"1\" class=\"text-primary underline underline-offset-2"
+        ));
+    }
+
+    #[test]
+    fn wiki_highlight_defaults_to_clickable_state_styles_when_caret_is_unknown() {
+        let html = wiki_highlight_html("x [[Page]]", None, &|_title| true);
+        assert!(html.contains(
+            "data-wiki-bracket=\"1\" class=\"text-[0px] leading-none text-transparent select-none\""
+        ));
+        assert!(html.contains(
+            "data-wiki-link-title=\"1\" class=\"text-primary underline underline-offset-2"
+        ));
+    }
+
+    #[test]
+    fn should_navigate_wiki_link_click_when_caret_is_outside_link() {
+        assert!(should_navigate_wiki_link_click(1, 1, 2, 10));
+        assert!(should_navigate_wiki_link_click(11, 11, 2, 10));
+    }
+
+    #[test]
+    fn should_not_navigate_wiki_link_click_when_caret_is_inside_link() {
+        assert!(!should_navigate_wiki_link_click(2, 2, 2, 10));
+        assert!(!should_navigate_wiki_link_click(9, 9, 2, 10));
+        assert!(!should_navigate_wiki_link_click(10, 10, 2, 10));
     }
 
     #[test]
