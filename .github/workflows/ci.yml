@@ -96,7 +96,7 @@ jobs:
           shared-key: ci
 
       - name: Install wasm-bindgen-cli
-        run: cargo install wasm-bindgen-cli --locked
+        run: cargo install wasm-bindgen-cli --version 0.2.108 --locked
 
       - name: Run tests (wasm32)
         env:
