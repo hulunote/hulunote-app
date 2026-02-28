@@ -330,6 +330,22 @@ fn wiki_link_exists(app_state: &AppContext, title: &str) -> bool {
         .any(|n| n.database_id == db_id && normalize_outline_page_title(&n.title) == title_norm)
 }
 
+fn resolve_wiki_link_target(
+    notes: &[Note],
+    db_id: &str,
+    current_note_id: &str,
+    title: &str,
+) -> (bool, bool) {
+    let title_norm = normalize_outline_page_title(title);
+    let target_note_id = notes
+        .iter()
+        .find(|n| n.database_id == db_id && normalize_outline_page_title(&n.title) == title_norm)
+        .map(|n| n.id.as_str());
+    let exists = target_note_id.is_some();
+    let is_self = target_note_id == Some(current_note_id);
+    (exists, is_self)
+}
+
 fn set_popover_open(el: &web_sys::Element, open: bool) {
     if !el.is_connected() {
         return;
@@ -3164,17 +3180,19 @@ pub fn OutlineNode(
                                                                         .current_database_id
                                                                         .get_untracked()
                                                                         .unwrap_or_default();
-                                                                    let title_norm_now = normalize_outline_page_title(&title_raw);
-                                                                    let link_exists = app_state
+                                                                    let current_note_id_now =
+                                                                        note_id_sv.get_value();
+                                                                    let notes_now = app_state
                                                                         .0
                                                                         .notes
-                                                                        .get_untracked()
-                                                                        .iter()
-                                                                        .any(|n| {
-                                                                            n.database_id == db_id_now
-                                                                                && normalize_outline_page_title(&n.title)
-                                                                                    == title_norm_now
-                                                                        });
+                                                                        .get_untracked();
+                                                                    let (link_exists, is_self_link) =
+                                                                        resolve_wiki_link_target(
+                                                                            &notes_now,
+                                                                            &db_id_now,
+                                                                            &current_note_id_now,
+                                                                            &title_raw,
+                                                                        );
                                                                     let link_button_class = "cursor-pointer group/wiki-link";
                                                                     let link_title_class = if link_exists {
                                                                         "text-primary underline underline-offset-2 decoration-dotted group-hover/wiki-link:text-primary/80"
@@ -3321,11 +3339,11 @@ pub fn OutlineNode(
                                                                                 class=link_button_class
                                                                                 style=format!("anchor-name: {}", preview_anchor_name)
                                                                                 on:mouseenter=move |_ev: web_sys::MouseEvent| {
-                                                                                    preview_trigger_hovered.set(true);
-                                                                                    schedule_preview_show();
-                                                                                    if !link_exists {
+                                                                                    if !link_exists || is_self_link {
                                                                                         return;
                                                                                     }
+                                                                                    preview_trigger_hovered.set(true);
+                                                                                    schedule_preview_show();
                                                                                     // Lazy-load preview data.
                                                                                     if preview_loaded_for.get_untracked().as_deref() == Some(title_for_hover.as_str()) {
                                                                                         return;
@@ -3514,7 +3532,7 @@ pub fn OutlineNode(
                                                                                 <span class="text-muted-foreground">"]]"</span>
                                                                             </button>
 
-                                                                            {if link_exists {
+                                                                            {if link_exists && !is_self_link {
                                                                                 view! {
                                                                                     <>
                                                                                         <div
@@ -5929,6 +5947,48 @@ mod tests {
     #[test]
     fn wiki_autocomplete_query_closes_when_trigger_removed() {
         assert_eq!(wiki_autocomplete_query_at_caret("[", 1), None);
+    }
+
+    #[test]
+    fn resolve_wiki_link_target_detects_self_reference() {
+        let notes = vec![Note {
+            id: "n1".to_string(),
+            database_id: "db1".to_string(),
+            title: "Home".to_string(),
+            content: "".to_string(),
+            created_at: "".to_string(),
+            updated_at: "".to_string(),
+        }];
+        assert_eq!(
+            resolve_wiki_link_target(&notes, "db1", "n1", "Home"),
+            (true, true)
+        );
+    }
+
+    #[test]
+    fn resolve_wiki_link_target_detects_non_self_reference() {
+        let notes = vec![
+            Note {
+                id: "n1".to_string(),
+                database_id: "db1".to_string(),
+                title: "Home".to_string(),
+                content: "".to_string(),
+                created_at: "".to_string(),
+                updated_at: "".to_string(),
+            },
+            Note {
+                id: "n2".to_string(),
+                database_id: "db1".to_string(),
+                title: "Other".to_string(),
+                content: "".to_string(),
+                created_at: "".to_string(),
+                updated_at: "".to_string(),
+            },
+        ];
+        assert_eq!(
+            resolve_wiki_link_target(&notes, "db1", "n1", "Other"),
+            (true, false)
+        );
     }
 
     #[test]
