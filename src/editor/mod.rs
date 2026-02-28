@@ -51,6 +51,8 @@ struct AutocompleteCtx {
 
     // Cache all possible page titles for current DB (notes + bidirectional links from all navs).
     titles_cache_db: RwSignal<Option<String>>,
+    // Signature of the note list snapshot used to build `titles_cache`.
+    titles_cache_notes_sig: RwSignal<Option<String>>,
     titles_cache: RwSignal<Vec<String>>,
     titles_loading: RwSignal<bool>,
 }
@@ -1145,26 +1147,19 @@ fn ensure_titles_loaded(app_state: &AppContext, ac: &AutocompleteCtx) {
         return;
     }
 
-    if ac.titles_loading.get_untracked() {
-        return;
-    }
-
-    // Treat empty title lists as a valid loaded state.
-    // Otherwise, when the backend returns no navs/notes, we would refetch on every keystroke.
-    if ac.titles_cache_db.get_untracked().as_deref() == Some(db_id.as_str()) {
+    let notes = app_state.0.notes.get_untracked();
+    let notes_sig = note_titles_signature_for_db(&notes, &db_id);
+    if ac.titles_cache_db.get_untracked().as_deref() == Some(db_id.as_str())
+        && ac.titles_cache_notes_sig.get_untracked().as_deref() == Some(notes_sig.as_str())
+    {
         return;
     }
 
     ac.titles_loading.set(true);
     ac.titles_cache_db.set(Some(db_id.clone()));
-
-    let notes = app_state.0.notes.get_untracked();
-
-    let ac2 = ac.clone();
-    spawn_local(async move {
-        ac2.titles_cache.set(note_titles_for_db(&notes, &db_id));
-        ac2.titles_loading.set(false);
-    });
+    ac.titles_cache_notes_sig.set(Some(notes_sig));
+    ac.titles_cache.set(note_titles_for_db(&notes, &db_id));
+    ac.titles_loading.set(false);
 }
 
 fn note_titles_for_db(notes: &[Note], db_id: &str) -> Vec<String> {
@@ -1175,6 +1170,25 @@ fn note_titles_for_db(notes: &[Note], db_id: &str) -> Vec<String> {
         }
     }
     set.into_iter().collect::<Vec<_>>()
+}
+
+fn note_titles_signature_for_db(notes: &[Note], db_id: &str) -> String {
+    let mut rows: Vec<(&str, &str, &str)> = notes
+        .iter()
+        .filter(|n| n.database_id == db_id)
+        .map(|n| (n.id.as_str(), n.title.as_str(), n.updated_at.as_str()))
+        .collect();
+    rows.sort_unstable_by(|a, b| a.0.cmp(b.0));
+    let mut out = String::new();
+    for (id, title, updated_at) in rows {
+        out.push_str(id);
+        out.push('\x1f');
+        out.push_str(title);
+        out.push('\x1f');
+        out.push_str(updated_at);
+        out.push('\x1e');
+    }
+    out
 }
 
 fn update_wiki_autocomplete_state(
@@ -1837,6 +1851,7 @@ pub fn OutlineEditor(
 
     // Cache all possible page titles for current DB (notes + bidirectional links from all navs).
     let titles_cache_db: RwSignal<Option<String>> = RwSignal::new(None);
+    let titles_cache_notes_sig: RwSignal<Option<String>> = RwSignal::new(None);
     let titles_cache: RwSignal<Vec<String>> = RwSignal::new(vec![]);
     let titles_loading: RwSignal<bool> = RwSignal::new(false);
 
@@ -2246,6 +2261,7 @@ pub fn OutlineEditor(
         ac_index,
         ac_start_utf16,
         titles_cache_db,
+        titles_cache_notes_sig,
         titles_cache,
         titles_loading,
     });
@@ -5913,6 +5929,56 @@ mod tests {
     #[test]
     fn wiki_autocomplete_query_closes_when_trigger_removed() {
         assert_eq!(wiki_autocomplete_query_at_caret("[", 1), None);
+    }
+
+    #[test]
+    fn note_titles_signature_changes_when_notes_change() {
+        let notes1 = vec![Note {
+            id: "n1".to_string(),
+            database_id: "db1".to_string(),
+            title: "A".to_string(),
+            content: "".to_string(),
+            created_at: "".to_string(),
+            updated_at: "1".to_string(),
+        }];
+        let notes2 = vec![Note {
+            id: "n1".to_string(),
+            database_id: "db1".to_string(),
+            title: "A2".to_string(),
+            content: "".to_string(),
+            created_at: "".to_string(),
+            updated_at: "2".to_string(),
+        }];
+        assert_ne!(
+            note_titles_signature_for_db(&notes1, "db1"),
+            note_titles_signature_for_db(&notes2, "db1")
+        );
+    }
+
+    #[test]
+    fn note_titles_signature_is_scoped_to_db() {
+        let notes = vec![
+            Note {
+                id: "n1".to_string(),
+                database_id: "db1".to_string(),
+                title: "A".to_string(),
+                content: "".to_string(),
+                created_at: "".to_string(),
+                updated_at: "1".to_string(),
+            },
+            Note {
+                id: "n2".to_string(),
+                database_id: "db2".to_string(),
+                title: "B".to_string(),
+                content: "".to_string(),
+                created_at: "".to_string(),
+                updated_at: "1".to_string(),
+            },
+        ];
+        assert_ne!(
+            note_titles_signature_for_db(&notes, "db1"),
+            note_titles_signature_for_db(&notes, "db2")
+        );
     }
 
     #[test]
