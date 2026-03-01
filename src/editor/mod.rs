@@ -105,6 +105,7 @@ const VLINE_START_ATTR: &str = "data-vline-start";
 const VLINE_LEN_ATTR: &str = "data-vline-len";
 const VLINE_HARD_BREAK_AFTER_ATTR: &str = "data-vline-hard-break-after";
 const CURSOR_SAVE_DEBOUNCE_MS: i32 = 300;
+const FOCUS_FLASH_MS: i32 = 1800;
 
 fn ce_snapshot(el: &web_sys::HtmlElement) -> EditorDomSnapshot {
     if let Some(raw) = el.get_attribute(EDITOR_TEXT_ATTR) {
@@ -221,6 +222,142 @@ fn schedule_note_cursor_save(
             save_note_cursor(&db_id, &note_id, &nav_id, cursor_col);
         }
     }
+}
+
+fn flash_focused_nav_once(focused_nav_id: RwSignal<Option<String>>, nav_id: String) {
+    if nav_id.trim().is_empty() {
+        return;
+    }
+    focused_nav_id.set(Some(nav_id.clone()));
+    let _ = window().set_timeout_with_callback_and_timeout_and_arguments_0(
+        wasm_bindgen::closure::Closure::once_into_js(move || {
+            if focused_nav_id.get_untracked().as_deref() == Some(nav_id.as_str()) {
+                focused_nav_id.set(None);
+            }
+        })
+        .as_ref()
+        .unchecked_ref(),
+        FOCUS_FLASH_MS,
+    );
+}
+
+fn can_user_see_nav_row(nav_id: &str) -> bool {
+    let Some(doc) = window().document() else {
+        return false;
+    };
+    if doc.hidden() {
+        return false;
+    }
+    if let Ok(has_focus) = doc.has_focus() {
+        if !has_focus {
+            return false;
+        }
+    }
+    let el_id = format!("nav-{nav_id}");
+    doc.get_element_by_id(&el_id)
+        .map(|el| el.is_connected())
+        .unwrap_or(false)
+}
+
+fn schedule_nav_flash_when_user_visible(
+    focused_nav_id: RwSignal<Option<String>>,
+    nav_id: String,
+    attempt: u32,
+) {
+    if nav_id.trim().is_empty() {
+        return;
+    }
+    if attempt > 240 {
+        return;
+    }
+
+    if !can_user_see_nav_row(&nav_id) {
+        let nav_id_next = nav_id.clone();
+        let _ = window().set_timeout_with_callback_and_timeout_and_arguments_0(
+            wasm_bindgen::closure::Closure::once_into_js(move || {
+                schedule_nav_flash_when_user_visible(focused_nav_id, nav_id_next, attempt + 1);
+            })
+            .as_ref()
+            .unchecked_ref(),
+            120,
+        );
+        return;
+    }
+
+    let nav_id_for_outer = nav_id.clone();
+    let _ = window().request_animation_frame(
+        wasm_bindgen::closure::Closure::once_into_js(move || {
+            let nav_id_for_inner = nav_id_for_outer.clone();
+            let _ = window().request_animation_frame(
+                wasm_bindgen::closure::Closure::once_into_js(move || {
+                    if can_user_see_nav_row(&nav_id_for_inner) {
+                        flash_focused_nav_once(focused_nav_id, nav_id_for_inner);
+                    }
+                })
+                .as_ref()
+                .unchecked_ref(),
+            );
+        })
+        .as_ref()
+        .unchecked_ref(),
+    );
+}
+
+fn try_flash_restored_nav_for_note_load(
+    pending_focus_flash_note_id: RwSignal<Option<String>>,
+    focused_nav_id: RwSignal<Option<String>>,
+    current_note_id: &str,
+    restored_nav_id: Option<String>,
+) {
+    if pending_focus_flash_note_id.get_untracked().as_deref() != Some(current_note_id) {
+        return;
+    }
+    let Some(nav_id) = restored_nav_id else {
+        return;
+    };
+    if should_skip_flash_when_same_row_already_highlighted(
+        focused_nav_id.get_untracked().as_deref(),
+        &nav_id,
+    ) {
+        pending_focus_flash_note_id.set(None);
+        return;
+    }
+    pending_focus_flash_note_id.set(None);
+    schedule_nav_flash_when_user_visible(focused_nav_id, nav_id, 0);
+}
+
+fn should_skip_flash_when_same_row_already_highlighted(
+    current_focused_nav_id: Option<&str>,
+    restored_nav_id: &str,
+) -> bool {
+    current_focused_nav_id == Some(restored_nav_id)
+}
+
+fn outline_row_class(
+    is_editing: bool,
+    is_focused_once: bool,
+    is_dragging: bool,
+    is_drag_source: bool,
+    is_drag_over: bool,
+) -> &'static str {
+    if is_editing {
+        if is_focused_once {
+            return "group outline-row outline-row--editing outline-row--focus-flash -ml-10 pl-10 flex items-start gap-0.5 py-0 rounded-md";
+        }
+        return "group outline-row outline-row--editing -ml-10 pl-10 flex items-start gap-0.5 py-0";
+    }
+    if is_dragging && is_drag_source {
+        // Make the dragged row semi-transparent (keep content visible).
+        return "group outline-row -ml-10 pl-10 flex items-start gap-0.5 py-0 rounded-md bg-muted/30 opacity-40";
+    }
+    if is_dragging && is_drag_over {
+        // Highlight drop target only while dragging.
+        return "group outline-row -ml-10 pl-10 flex items-start gap-0.5 py-0 rounded-md bg-muted ring-1 ring-ring/40";
+    }
+    if is_focused_once {
+        return "group outline-row outline-row--focus-flash -ml-10 pl-10 flex items-start gap-0.5 py-0 rounded-md";
+    }
+    "group outline-row -ml-10 pl-10 flex items-start gap-0.5 py-0"
 }
 
 fn ce_text(el: &web_sys::HtmlElement) -> String {
@@ -1845,27 +1982,34 @@ fn restore_editor_focus_for_note(
     editing_value: RwSignal<String>,
     editing_snapshot: RwSignal<Option<(String, String)>>,
     target_cursor_col: RwSignal<Option<u32>>,
-) {
-    if editing_id.get_untracked().is_some() {
-        return;
-    }
-
+) -> Option<String> {
     let visible_ids = collect_visible_preorder_ids(navs);
-    let Some(first_visible_id) = visible_ids.first().cloned() else {
-        return;
-    };
+    let current_editing_id = editing_id.get_untracked();
+    if should_skip_focus_restore_for_visible_editing(current_editing_id.as_deref(), &visible_ids) {
+        return None;
+    }
+    let first_visible_id = visible_ids.first().cloned()?;
 
     let picked = pick_editor_focus_target(&visible_ids, saved_cursor, preferred_nav_id)
         .unwrap_or((first_visible_id, 0));
 
-    let Some(nav) = navs.iter().find(|n| n.id == picked.0) else {
-        return;
-    };
+    let nav = navs.iter().find(|n| n.id == picked.0)?;
 
     editing_id.set(Some(nav.id.clone()));
     editing_value.set(nav.content.clone());
     editing_snapshot.set(Some((nav.id.clone(), nav.content.clone())));
     target_cursor_col.set(Some(picked.1));
+    Some(nav.id.clone())
+}
+
+fn should_skip_focus_restore_for_visible_editing(
+    current_editing_id: Option<&str>,
+    visible_ids: &[String],
+) -> bool {
+    let Some(current) = current_editing_id else {
+        return false;
+    };
+    visible_ids.iter().any(|id| id == current)
 }
 
 fn pick_editor_focus_target(
@@ -1945,6 +2089,7 @@ pub fn OutlineEditor(
 
     let target_cursor_col: RwSignal<Option<u32>> = RwSignal::new(None);
     let editing_ref: NodeRef<html::Div> = NodeRef::new();
+    let pending_focus_flash_note_id: RwSignal<Option<String>> = RwSignal::new(None);
 
     // Autocomplete for `[[...]]` (bidirectional-link)
     // - Data source is fixed: existing notes + titles extracted from all nav contents in current DB.
@@ -2004,6 +2149,7 @@ pub fn OutlineEditor(
         let db_id_now = app_state.0.current_database_id.get().unwrap_or_default();
 
         if id.trim().is_empty() {
+            pending_focus_flash_note_id.set(None);
             set_navs_with_reconciled_editing(
                 navs,
                 vec![],
@@ -2015,6 +2161,7 @@ pub fn OutlineEditor(
             offline_missing_snapshot.set(false);
             return;
         }
+        pending_focus_flash_note_id.set(Some(id.clone()));
 
         let sync = expect_context::<NoteSyncController>();
 
@@ -2069,7 +2216,7 @@ pub fn OutlineEditor(
                     && !suppress_by_new_note_intent
                     && !suppress_by_title_focus_owner
                 {
-                    restore_editor_focus_for_note(
+                    let restored_nav_id = restore_editor_focus_for_note(
                         &xs,
                         load_note_cursor(&db_id_now, &id)
                             .map(|saved| (saved.nav_id, saved.cursor_col)),
@@ -2078,6 +2225,12 @@ pub fn OutlineEditor(
                         editing_value,
                         editing_snapshot,
                         target_cursor_col,
+                    );
+                    try_flash_restored_nav_for_note_load(
+                        pending_focus_flash_note_id,
+                        focused_nav_id,
+                        &id,
+                        restored_nav_id,
                     );
                 }
 
@@ -2106,7 +2259,6 @@ pub fn OutlineEditor(
             loading.set(false);
             return;
         }
-
         loading.set(true);
         error.set(None);
 
@@ -2177,7 +2329,7 @@ pub fn OutlineEditor(
                         && !suppress_by_new_note_intent
                         && !suppress_by_title_focus_owner
                     {
-                        restore_editor_focus_for_note(
+                        let restored_nav_id = restore_editor_focus_for_note(
                             &xs,
                             load_note_cursor(&db_id2, &id)
                                 .map(|saved| (saved.nav_id, saved.cursor_col)),
@@ -2186,6 +2338,12 @@ pub fn OutlineEditor(
                             editing_value,
                             editing_snapshot,
                             target_cursor_col,
+                        );
+                        try_flash_restored_nav_for_note_load(
+                            pending_focus_flash_note_id,
+                            focused_nav_id,
+                            &id,
+                            restored_nav_id,
                         );
                     }
 
@@ -2224,7 +2382,7 @@ pub fn OutlineEditor(
                                 && !suppress_by_new_note_intent
                                 && !suppress_by_title_focus_owner
                             {
-                                restore_editor_focus_for_note(
+                                let restored_nav_id = restore_editor_focus_for_note(
                                     &xs,
                                     load_note_cursor(&db_id2, &id)
                                         .map(|saved| (saved.nav_id, saved.cursor_col)),
@@ -2233,6 +2391,12 @@ pub fn OutlineEditor(
                                     editing_value,
                                     editing_snapshot,
                                     target_cursor_col,
+                                );
+                                try_flash_restored_nav_for_note_load(
+                                    pending_focus_flash_note_id,
+                                    focused_nav_id,
+                                    &id,
+                                    restored_nav_id,
                                 );
                             }
                             apply_local_draft_overlay_and_refresh_snapshot(
@@ -2814,23 +2978,19 @@ pub fn OutlineNode(
                                 class=move || {
                                     let id = nav_id_sv.get_value();
                                     let is_editing = editing_id.get().as_deref() == Some(id.as_str());
-                                    let _is_focused = focused_nav_id.get().as_deref() == Some(id.as_str());
+                                    let is_focused_once =
+                                        focused_nav_id.get().as_deref() == Some(id.as_str());
 
                                     let is_dragging = dragging_nav_id.get().is_some();
                                     let is_drag_source = dragging_nav_id.get().as_deref() == Some(id.as_str());
                                     let is_drag_over = drag_over_nav_id.get().as_deref() == Some(id.as_str());
-
-                                    if is_editing {
-                                        "group outline-row outline-row--editing -ml-10 pl-10 flex items-start gap-0.5 py-0"
-                                    } else if is_dragging && is_drag_source {
-                                        // Make the dragged row semi-transparent (keep content visible).
-                                        "group outline-row -ml-10 pl-10 flex items-start gap-0.5 py-0 rounded-md bg-muted/30 opacity-40"
-                                    } else if is_dragging && is_drag_over {
-                                        // Highlight drop target only while dragging.
-                                        "group outline-row -ml-10 pl-10 flex items-start gap-0.5 py-0 rounded-md bg-muted ring-1 ring-ring/40"
-                                    } else {
-                                        "group outline-row -ml-10 pl-10 flex items-start gap-0.5 py-0"
-                                    }
+                                    outline_row_class(
+                                        is_editing,
+                                        is_focused_once,
+                                        is_dragging,
+                                        is_drag_source,
+                                        is_drag_over,
+                                    )
                                 }
                                 // Drag is started from the bullet/triangle only (button below).
                                 on:mouseenter=move |_ev: web_sys::MouseEvent| {
@@ -3548,6 +3708,10 @@ pub fn OutlineNode(
                                                                                     if db_id.trim().is_empty() {
                                                                                         return;
                                                                                     }
+                                                                                    let current_note_id_for_nav = note_id_sv.get_value();
+                                                                                    let current_nav_id_for_flash = editing_id
+                                                                                        .get_untracked()
+                                                                                        .unwrap_or_else(|| nav_id_sv.get_value());
 
                                                                                     let api_client = app_state_click.0.api_client.get_untracked();
                                                                                     let navigate2 = navigate.clone();
@@ -3565,6 +3729,14 @@ pub fn OutlineNode(
                                                                                         };
 
                                                                                         if let Some(id) = find_existing_id(&app_state2.0.notes.get_untracked()) {
+                                                                                            if id == current_note_id_for_nav {
+                                                                                                schedule_nav_flash_when_user_visible(
+                                                                                                    focused_nav_id,
+                                                                                                    current_nav_id_for_flash.clone(),
+                                                                                                    0,
+                                                                                                );
+                                                                                                return;
+                                                                                            }
                                                                                             navigate2(
                                                                                                 &format!("/db/{}/note/{}", db_id, id),
                                                                                                 leptos_router::NavigateOptions::default(),
@@ -3575,6 +3747,14 @@ pub fn OutlineNode(
                                                                                         if let Ok(notes) = api_client.get_all_note_list(&db_id).await {
                                                                                             app_state2.0.notes.set(notes.clone());
                                                                                             if let Some(id) = find_existing_id(&notes) {
+                                                                                                if id == current_note_id_for_nav {
+                                                                                                    schedule_nav_flash_when_user_visible(
+                                                                                                        focused_nav_id,
+                                                                                                        current_nav_id_for_flash.clone(),
+                                                                                                        0,
+                                                                                                    );
+                                                                                                    return;
+                                                                                                }
                                                                                                 navigate2(
                                                                                                     &format!("/db/{}/note/{}", db_id, id),
                                                                                                     leptos_router::NavigateOptions::default(),
@@ -3917,10 +4097,14 @@ pub fn OutlineNode(
                                                 if db_id.trim().is_empty() {
                                                     return;
                                                 }
+                                                let current_nav_id = editing_id
+                                                    .get_untracked()
+                                                    .unwrap_or_else(|| nav_id_sv.get_value());
 
                                                 let app_state_click = app_state_sv.get_value();
                                                 let api_client = app_state_click.0.api_client.get_untracked();
                                                 let navigate = navigate_sv.get_value();
+                                                let current_note_id_for_nav = note_id_sv.get_value();
                                                 spawn_local(async move {
                                                     let find_existing_id = |notes: &[Note]| {
                                                         notes
@@ -3936,6 +4120,14 @@ pub fn OutlineNode(
                                                     if let Some(id) =
                                                         find_existing_id(&app_state_click.0.notes.get_untracked())
                                                     {
+                                                        if id == current_note_id_for_nav {
+                                                            schedule_nav_flash_when_user_visible(
+                                                                focused_nav_id,
+                                                                current_nav_id.clone(),
+                                                                0,
+                                                            );
+                                                            return;
+                                                        }
                                                         navigate(
                                                             &format!("/db/{}/note/{}", db_id, id),
                                                             leptos_router::NavigateOptions::default(),
@@ -3946,6 +4138,14 @@ pub fn OutlineNode(
                                                     if let Ok(notes) = api_client.get_all_note_list(&db_id).await {
                                                         app_state_click.0.notes.set(notes.clone());
                                                         if let Some(id) = find_existing_id(&notes) {
+                                                            if id == current_note_id_for_nav {
+                                                                schedule_nav_flash_when_user_visible(
+                                                                    focused_nav_id,
+                                                                    current_nav_id.clone(),
+                                                                    0,
+                                                                );
+                                                                return;
+                                                            }
                                                             navigate(
                                                                 &format!("/db/{}/note/{}", db_id, id),
                                                                 leptos_router::NavigateOptions::default(),
@@ -6672,5 +6872,47 @@ mod tests {
         let visible_ids = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let picked = pick_editor_focus_target(&visible_ids, Some(("c".to_string(), 9)), None);
         assert_eq!(picked, Some(("c".to_string(), 9)));
+    }
+
+    #[test]
+    fn outline_row_class_applies_one_shot_focus_background() {
+        assert!(outline_row_class(false, true, false, false, false)
+            .contains("outline-row--focus-flash"));
+        assert!(
+            outline_row_class(true, true, false, false, false).contains("outline-row--focus-flash")
+        );
+        assert!(outline_row_class(false, false, true, true, false).contains("opacity-40"));
+    }
+
+    #[test]
+    fn should_skip_focus_restore_only_for_visible_current_editing_id() {
+        let visible_ids = vec!["a".to_string(), "b".to_string()];
+        assert!(should_skip_focus_restore_for_visible_editing(
+            Some("a"),
+            &visible_ids
+        ));
+        assert!(!should_skip_focus_restore_for_visible_editing(
+            Some("x"),
+            &visible_ids
+        ));
+        assert!(!should_skip_focus_restore_for_visible_editing(
+            None,
+            &visible_ids
+        ));
+    }
+
+    #[test]
+    fn should_skip_flash_only_when_same_row_already_highlighted() {
+        assert!(should_skip_flash_when_same_row_already_highlighted(
+            Some("nav-1"),
+            "nav-1"
+        ));
+        assert!(!should_skip_flash_when_same_row_already_highlighted(
+            Some("nav-2"),
+            "nav-1"
+        ));
+        assert!(!should_skip_flash_when_same_row_already_highlighted(
+            None, "nav-1"
+        ));
     }
 }

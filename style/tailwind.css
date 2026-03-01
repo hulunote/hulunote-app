@@ -107,3 +107,19 @@ body {
 .outline-row {
   border-radius: var(--radius-md);
 }
+
+.outline-row--focus-flash {
+  animation: outline-focus-flash 1.8s ease-in-out 1;
+}
+
+@keyframes outline-focus-flash {
+  0% {
+    background-color: rgb(var(--surface-active) / 0);
+  }
+  18% {
+    background-color: rgb(var(--surface-active) / 0.7);
+  }
+  100% {
+    background-color: rgb(var(--surface-active) / 0);
+  }
+}
