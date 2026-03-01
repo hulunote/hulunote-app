@@ -3590,11 +3590,28 @@ pub fn OutlineNode(
                                                                                 class=link_button_class
                                                                                 style=format!("anchor-name: {}", preview_anchor_name)
                                                                                 on:mouseenter=move |_ev: web_sys::MouseEvent| {
-                                                                                    if !link_exists || is_self_link {
+                                                                                    // Product rule:
+                                                                                    // - self-link: show static preview (no network fetch)
+                                                                                    // - missing link: show static create hint (no network fetch)
+                                                                                    // - existing non-self link: show content preview (may fetch)
+                                                                                    if is_self_link {
+                                                                                        preview_trigger_hovered.set(true);
+                                                                                        schedule_preview_show();
+                                                                                        preview_loading.set(false);
+                                                                                        preview_error.set(None);
+                                                                                        preview_lines.set(vec![]);
                                                                                         return;
                                                                                     }
                                                                                     preview_trigger_hovered.set(true);
                                                                                     schedule_preview_show();
+                                                                                    // Missing links should display a static create hint only.
+                                                                                    // Do not issue note list / nav fetches here.
+                                                                                    if !link_exists {
+                                                                                        preview_loading.set(false);
+                                                                                        preview_error.set(None);
+                                                                                        preview_lines.set(vec![]);
+                                                                                        return;
+                                                                                    }
                                                                                     // Lazy-load preview data.
                                                                                     if preview_loaded_for.get_untracked().as_deref() == Some(title_for_hover.as_str()) {
                                                                                         return;
@@ -3801,7 +3818,29 @@ pub fn OutlineNode(
                                                                                 <span class=link_title_class>{title_display}</span>
                                                                             </button>
 
-                                                                            {if link_exists && !is_self_link {
+                                                                            {if is_self_link {
+                                                                                view! {
+                                                                                    <>
+                                                                                        <div
+                                                                                            node_ref=preview_popover_ref
+                                                                                            id=preview_popover_id
+                                                                                            popover="manual"
+                                                                                            class="w-[22rem] max-w-[90vw] rounded-md border border-border-strong bg-card text-card-foreground p-3 text-xs shadow-lg"
+                                                                                            on:mouseenter=move |_ev: web_sys::MouseEvent| {
+                                                                                                preview_popover_hovered.set(true);
+                                                                                                schedule_preview_show();
+                                                                                            }
+                                                                                            on:mouseleave=move |_ev: web_sys::MouseEvent| {
+                                                                                                preview_popover_hovered.set(false);
+                                                                                                schedule_preview_hide();
+                                                                                            }
+                                                                                        >
+                                                                                            <div class="font-medium truncate"><span class="mr-2">"📍"</span>{title_preview_title.clone()}<span class="ml-2 text-muted-foreground">"(This note)"</span></div>
+                                                                                        </div>
+                                                                                    </>
+                                                                                }
+                                                                                    .into_any()
+                                                                            } else if link_exists {
                                                                                 view! {
                                                                                     <>
                                                                                         <div
@@ -3851,6 +3890,7 @@ pub fn OutlineNode(
                                                                                 }
                                                                                     .into_any()
                                                                             } else {
+                                                                                // Missing link preview: static "click to create" guidance.
                                                                                 view! {
                                                                                     <>
                                                                                         <div
@@ -3867,7 +3907,7 @@ pub fn OutlineNode(
                                                                                                 schedule_preview_hide();
                                                                                             }
                                                                                         >
-                                                                                            <div class="font-medium truncate"><span class="mr-2">"🔗"</span>{title_preview_title.clone()}</div>
+                                                                                            <div class="font-medium truncate"><span class="mr-2">"✨"</span>{title_preview_title.clone()}</div>
                                                                                             <div class="mt-2 text-muted-foreground">
                                                                                                 "Click link to create this note."
                                                                                             </div>
@@ -3951,12 +3991,6 @@ pub fn OutlineNode(
                                                     return;
                                                 }
 
-                                                let link_start_utf16 = link_el
-                                                    .get_attribute("data-wiki-start-utf16")
-                                                    .and_then(|v| v.parse::<u32>().ok());
-                                                let link_end_utf16 = link_el
-                                                    .get_attribute("data-wiki-end-utf16")
-                                                    .and_then(|v| v.parse::<u32>().ok());
                                                 let title = link_el
                                                     .get_attribute("data-wiki-title")
                                                     .unwrap_or_default();
@@ -3965,28 +3999,9 @@ pub fn OutlineNode(
                                                     editing_link_preview_open.set(false);
                                                     return;
                                                 }
-
-                                                let mut clickable = true;
-                                                if let (Some(start), Some(end)) =
-                                                    (link_start_utf16, link_end_utf16)
-                                                {
-                                                    let (caret_start, caret_end, _len) =
-                                                        ce_selection_utf16(&editor_el);
-                                                    clickable = should_navigate_wiki_link_click(
-                                                        caret_start,
-                                                        caret_end,
-                                                        start,
-                                                        end,
-                                                    );
-                                                }
-                                                let _ = editor_el.style().set_property(
-                                                    "cursor",
-                                                    if clickable { "pointer" } else { "text" },
-                                                );
-                                                if !clickable {
-                                                    editing_link_preview_open.set(false);
-                                                    return;
-                                                }
+                                                let _ = editor_el
+                                                    .style()
+                                                    .set_property("cursor", "pointer");
 
                                                 let app_state_now = app_state_sv.get_value();
                                                 let db_id_now = app_state_now
