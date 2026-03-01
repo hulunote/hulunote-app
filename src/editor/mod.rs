@@ -184,6 +184,7 @@ fn ce_snapshot(el: &web_sys::HtmlElement) -> EditorDomSnapshot {
 
 fn schedule_note_cursor_save(
     timer_id: RwSignal<Option<i32>>,
+    pending: RwSignal<Option<(String, String, String, u32)>>,
     db_id: &str,
     note_id: &str,
     nav_id: &str,
@@ -195,18 +196,28 @@ fn schedule_note_cursor_save(
 
     let w = window();
 
-    if let Some(id) = timer_id.get_untracked() {
+    if let Some(id) = timer_id.try_get_untracked().flatten() {
         w.clear_timeout_with_handle(id);
     }
 
     let db_id = db_id.to_string();
     let note_id = note_id.to_string();
     let nav_id = nav_id.to_string();
+    let _ = pending.try_set(Some((
+        db_id.clone(),
+        note_id.clone(),
+        nav_id.clone(),
+        cursor_col,
+    )));
     let db_id_cb = db_id.clone();
     let note_id_cb = note_id.clone();
     let nav_id_cb = nav_id.clone();
+    let pending_cb = pending;
+    let timer_id_cb = timer_id;
     let cb = Closure::<dyn FnMut()>::new(move || {
         save_note_cursor(&db_id_cb, &note_id_cb, &nav_id_cb, cursor_col);
+        let _ = pending_cb.try_set(None);
+        let _ = timer_id_cb.try_set(None);
     });
 
     match w.set_timeout_with_callback_and_timeout_and_arguments_0(
@@ -214,12 +225,13 @@ fn schedule_note_cursor_save(
         CURSOR_SAVE_DEBOUNCE_MS,
     ) {
         Ok(id) => {
-            timer_id.set(Some(id));
+            let _ = timer_id.try_set(Some(id));
             cb.forget();
         }
         Err(_) => {
-            timer_id.set(None);
+            let _ = timer_id.try_set(None);
             save_note_cursor(&db_id, &note_id, &nav_id, cursor_col);
+            let _ = pending.try_set(None);
         }
     }
 }
@@ -2666,6 +2678,7 @@ pub fn OutlineNode(
     // In multiline mode, Shift+Enter can jump to first-line end and then jump back.
     let shift_enter_return_caret: RwSignal<Option<u32>> = RwSignal::new(None);
     let cursor_save_timer_id: RwSignal<Option<i32>> = RwSignal::new(None);
+    let cursor_save_pending: RwSignal<Option<(String, String, String, u32)>> = RwSignal::new(None);
     // Cross-row mouse activation should not apply a stale cursor column on focus.
     let skip_next_focus_col_restore: RwSignal<bool> = RwSignal::new(false);
 
@@ -2753,9 +2766,16 @@ pub fn OutlineNode(
     });
 
     on_cleanup(move || {
-        if let Some(id) = cursor_save_timer_id.get_untracked() {
+        if let Some(id) = cursor_save_timer_id.try_get_untracked().flatten() {
             let w = window();
             w.clear_timeout_with_handle(id);
+            let _ = cursor_save_timer_id.try_set(None);
+            if let Some((db_id, note_id, nav_id, cursor_col)) =
+                cursor_save_pending.try_get_untracked().flatten()
+            {
+                save_note_cursor(&db_id, &note_id, &nav_id, cursor_col);
+                let _ = cursor_save_pending.try_set(None);
+            }
         }
         if let Some(pop) = ac_popover_ref.get_untracked() {
             let el: web_sys::Element = pop.unchecked_into();
@@ -3368,6 +3388,11 @@ pub fn OutlineNode(
                                                 // Then place caret by click point on a second frame, after contenteditable mount.
                                                 let editing_ref3 = editing_ref;
                                                 let target_cursor_col3 = target_cursor_col;
+                                                let cursor_save_timer_id3 = cursor_save_timer_id;
+                                                let cursor_save_pending3 = cursor_save_pending;
+                                                let id_for_save = id.clone();
+                                                let db_id_for_save = db_id.clone();
+                                                let note_id_for_save = note_id.clone();
                                                 let place = Closure::<dyn FnMut()>::new(move || {
                                                     if let Some(el) = editing_ref3
                                                         .get_untracked()
@@ -3378,6 +3403,14 @@ pub fn OutlineNode(
                                                         );
                                                         let (col, _end, _len) = ce_selection_utf16(&el);
                                                         target_cursor_col3.set(Some(col));
+                                                        schedule_note_cursor_save(
+                                                            cursor_save_timer_id3,
+                                                            cursor_save_pending3,
+                                                            &db_id_for_save,
+                                                            &note_id_for_save,
+                                                            &id_for_save,
+                                                            col,
+                                                        );
                                                     }
                                                 });
                                                 let _ = window().request_animation_frame(
@@ -4375,6 +4408,7 @@ pub fn OutlineNode(
                                                 target_cursor_col.set(Some(caret_utf16));
                                                 schedule_note_cursor_save(
                                                     cursor_save_timer_id,
+                                                    cursor_save_pending,
                                                     &db_id_sv.get_value(),
                                                     &note_id_sv.get_value(),
                                                     &nav_id_sv.get_value(),
@@ -4487,6 +4521,7 @@ pub fn OutlineNode(
                                                     );
                                                     schedule_note_cursor_save(
                                                         cursor_save_timer_id,
+                                                        cursor_save_pending,
                                                         &db_id_sv.get_value(),
                                                         &note_id_sv.get_value(),
                                                         &nav_id_sv.get_value(),
@@ -4567,7 +4602,11 @@ pub fn OutlineNode(
                                                     }
 
                                                     // Persist caret to storage only; do not update in-memory focus restore state here.
-                                                    let (caret_col, _caret_end, _len_before) = ce_selection_utf16(&el);
+                                                    let (caret_col_from_selection, _caret_end, _len_before) =
+                                                        ce_selection_utf16(&el);
+                                                    let caret_col = target_cursor_col
+                                                        .get_untracked()
+                                                        .unwrap_or(caret_col_from_selection);
                                                     save_note_cursor(
                                                         &db_id_fallback,
                                                         &note_id_now,
@@ -4625,6 +4664,7 @@ pub fn OutlineNode(
                                                 target_cursor_col.set(Some(caret_utf16));
                                                 schedule_note_cursor_save(
                                                     cursor_save_timer_id,
+                                                    cursor_save_pending,
                                                     &db_id_sv.get_value(),
                                                     &note_id_sv.get_value(),
                                                     &nav_id_sv.get_value(),
@@ -4650,6 +4690,7 @@ pub fn OutlineNode(
                                                     ce_selection_utf16(&el);
                                                 schedule_note_cursor_save(
                                                     cursor_save_timer_id,
+                                                    cursor_save_pending,
                                                     &db_id_sv.get_value(),
                                                     &note_id_sv.get_value(),
                                                     &nav_id_sv.get_value(),
