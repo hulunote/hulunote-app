@@ -2691,6 +2691,7 @@ pub fn OutlineNode(
     // (handler ids are captured per-render; avoid moving values out of the render closure)
 
     let nav_id_sv = StoredValue::new(nav_id.clone());
+    let note_id_sv = StoredValue::new(note_id.clone());
 
     // Focus is handled at the node level (instead of OutlineEditor + setTimeout) so the component
     // that owns the contenteditable DOM is responsible for focusing it.
@@ -2742,7 +2743,7 @@ pub fn OutlineNode(
             .unchecked_ref(),
         );
     });
-    let note_id_sv = StoredValue::new(note_id.clone());
+
     let app_state_sv = StoredValue::new(app_state.clone());
     let ac_sv = StoredValue::new(ac.clone());
     let navigate_sv = StoredValue::new(navigate.clone());
@@ -3398,9 +3399,26 @@ pub fn OutlineNode(
                                                         .get_untracked()
                                                         .and_then(|n| n.dyn_into::<web_sys::HtmlElement>().ok())
                                                     {
-                                                        let _ = ce_set_caret_from_client_point(
+                                                        ce_refresh_wiki_highlighted(&el, &|_title| false);
+                                                        let mut caret_placed = ce_set_caret_from_client_point(
                                                             &el, click_x, click_y,
                                                         );
+                                                        if !caret_placed {
+                                                            // Retry once after rebuilding highlight DOM.
+                                                            ce_refresh_wiki_highlighted(
+                                                                &el,
+                                                                &|_title| false,
+                                                            );
+                                                            caret_placed = ce_set_caret_from_client_point(
+                                                                &el, click_x, click_y,
+                                                            );
+                                                        }
+                                                        if caret_placed {
+                                                            ce_refresh_wiki_highlighted(
+                                                                &el,
+                                                                &|_title| false,
+                                                            );
+                                                        }
                                                         let (col, _end, _len) = ce_selection_utf16(&el);
                                                         target_cursor_col3.set(Some(col));
                                                         schedule_note_cursor_save(
