@@ -105,6 +105,9 @@ const VLINE_ATTR: &str = "data-vline";
 const VLINE_INDEX_ATTR: &str = "data-vline-index";
 const VLINE_START_ATTR: &str = "data-vline-start";
 const VLINE_LEN_ATTR: &str = "data-vline-len";
+const VLINE_VISIBLE_LEN_ATTR: &str = "data-vline-visible-len";
+const VLINE_MAP_ATTR: &str = "data-vline-map";
+const VLINE_RAW_ATTR: &str = "data-vline-raw";
 const VLINE_HARD_BREAK_AFTER_ATTR: &str = "data-vline-hard-break-after";
 const CURSOR_SAVE_DEBOUNCE_MS: i32 = 300;
 const FOCUS_FLASH_MS: i32 = 1800;
@@ -428,6 +431,7 @@ fn ce_render_visual_lines_with<F>(
         let _ = row.set_attribute(VLINE_INDEX_ATTR, &idx.to_string());
         let _ = row.set_attribute(VLINE_START_ATTR, &line.start_utf16.to_string());
         let _ = row.set_attribute(VLINE_LEN_ATTR, &line.len_utf16.to_string());
+        let _ = row.set_attribute(VLINE_RAW_ATTR, &line.text);
         let _ = row.set_attribute(
             VLINE_HARD_BREAK_AFTER_ATTR,
             if line.hard_break_after { "1" } else { "0" },
@@ -444,7 +448,15 @@ fn ce_render_visual_lines_with<F>(
                     None
                 }
             });
-            span.set_inner_html(&wiki_highlight_html(&line.text, rel, is_valid_wiki_link));
+            let rendered = wiki_highlight_render(&line.text, rel, is_valid_wiki_link);
+            span.set_inner_html(&rendered.html);
+            let _ = row.set_attribute(
+                VLINE_VISIBLE_LEN_ATTR,
+                &rendered.visible_utf16_len.to_string(),
+            );
+            if let Ok(map_json) = serde_json::to_string(&rendered.map) {
+                let _ = row.set_attribute(VLINE_MAP_ATTR, &map_json);
+            }
             let _ = row.append_child(&span);
         }
         let _ = el.append_child(&row);
@@ -457,10 +469,6 @@ fn escape_html(s: &str) -> String {
 
 fn render_basic_markdown_inline_html(s: &str) -> String {
     render::render_basic_markdown_inline_html(s)
-}
-
-fn render_basic_markdown_inline_html_for_editing(s: &str, caret_byte: Option<usize>) -> String {
-    render::render_basic_markdown_inline_html_for_editing(s, caret_byte)
 }
 
 fn wiki_link_exists(app_state: &AppContext, title: &str) -> bool {
@@ -597,7 +605,37 @@ fn should_navigate_wiki_link_click(
     caret_start_utf16 < link_start_utf16 || caret_start_utf16 > link_end_utf16
 }
 
-fn wiki_highlight_html<F>(s: &str, caret_utf16: Option<u32>, is_valid_wiki_link: &F) -> String
+fn push_offset_segment(
+    map: &mut Vec<render::OffsetMapSeg>,
+    vis_start: u32,
+    raw_start: u32,
+    len: u32,
+) {
+    if len == 0 {
+        return;
+    }
+    if let Some(last) = map.last_mut() {
+        let last_vis_end = last.vis_start + last.len;
+        let last_raw_end = last.raw_start + last.len;
+        let same_delta = (last.raw_start as i64 - last.vis_start as i64)
+            == (raw_start as i64 - vis_start as i64);
+        if same_delta && last_vis_end == vis_start && last_raw_end == raw_start {
+            last.len += len;
+            return;
+        }
+    }
+    map.push(render::OffsetMapSeg {
+        vis_start,
+        raw_start,
+        len,
+    });
+}
+
+fn wiki_highlight_render<F>(
+    s: &str,
+    caret_utf16: Option<u32>,
+    is_valid_wiki_link: &F,
+) -> render::InlineRenderResult
 where
     F: Fn(&str) -> bool,
 {
@@ -605,6 +643,8 @@ where
     let mut cursor = 0usize;
     let mut cursor_utf16 = 0u32;
     let mut out = String::new();
+    let mut visible_utf16 = 0u32;
+    let mut map: Vec<render::OffsetMapSeg> = Vec::new();
     for t in parse_bidirectional_tokens(s) {
         match t.clone() {
             BidirectionalToken::Text(txt) => {
@@ -617,11 +657,21 @@ where
                         None
                     }
                 });
-                out.push_str(&render_basic_markdown_inline_html_for_editing(
-                    &txt, seg_caret,
-                ));
+                let rendered =
+                    render::render_basic_markdown_inline_for_editing_mapped(&txt, seg_caret);
+                out.push_str(&rendered.html);
+                for seg in rendered.map {
+                    push_offset_segment(
+                        &mut map,
+                        visible_utf16 + seg.vis_start,
+                        cursor_utf16 + seg.raw_start,
+                        seg.len,
+                    );
+                }
                 cursor = seg_end;
-                cursor_utf16 += txt.encode_utf16().count() as u32;
+                let txt_utf16 = txt.encode_utf16().count() as u32;
+                cursor_utf16 += txt_utf16;
+                visible_utf16 += rendered.visible_utf16_len;
             }
             BidirectionalToken::Link(label) => {
                 // Keep caret-byte mapping aligned with source bytes.
@@ -629,6 +679,7 @@ where
                 let link_start_utf16 = cursor_utf16;
                 let link_end_utf16 = link_start_utf16 + 2 + label.encode_utf16().count() as u32 + 2;
                 cursor_utf16 = link_end_utf16;
+                let link_len_utf16 = link_end_utf16 - link_start_utf16;
                 if label.is_empty() {
                     out.push_str("[[]]");
                 } else {
@@ -668,10 +719,24 @@ where
                         bracket_class,
                     ));
                 }
+                push_offset_segment(&mut map, visible_utf16, link_start_utf16, link_len_utf16);
+                visible_utf16 += link_len_utf16;
             }
         }
     }
-    out
+    render::InlineRenderResult {
+        html: out,
+        visible_utf16_len: visible_utf16,
+        map,
+    }
+}
+
+#[cfg(test)]
+fn wiki_highlight_html<F>(s: &str, caret_utf16: Option<u32>, is_valid_wiki_link: &F) -> String
+where
+    F: Fn(&str) -> bool,
+{
+    wiki_highlight_render(s, caret_utf16, is_valid_wiki_link).html
 }
 
 fn ce_set_wiki_highlighted<F>(
@@ -698,12 +763,14 @@ fn ce_set_text_and_restore_caret_with_highlight<F>(
     ce_set_caret_utf16(el, caret_utf16);
 }
 
-fn ce_refresh_wiki_highlighted<F>(el: &web_sys::HtmlElement, is_valid_wiki_link: &F)
-where
+fn ce_refresh_wiki_highlighted_at_caret<F>(
+    el: &web_sys::HtmlElement,
+    caret_utf16: u32,
+    is_valid_wiki_link: &F,
+) where
     F: Fn(&str) -> bool,
 {
     let text = ce_text(el);
-    let (caret_utf16, _caret_end_utf16, _len) = ce_selection_utf16(el);
     ce_set_wiki_highlighted(el, &text, Some(caret_utf16), is_valid_wiki_link);
     ce_set_caret_utf16(el, caret_utf16);
 }
@@ -769,6 +836,284 @@ fn outline_delete_state(has_any_text: bool, semantic_br_count: u32) -> OutlineDe
 
 fn parse_u32_attr(el: &web_sys::Element, key: &str) -> Option<u32> {
     el.get_attribute(key).and_then(|v| v.parse::<u32>().ok())
+}
+
+fn parse_offset_map_attr(el: &web_sys::Element) -> Option<Vec<render::OffsetMapSeg>> {
+    let raw = el.get_attribute(VLINE_MAP_ATTR)?;
+    serde_json::from_str::<Vec<render::OffsetMapSeg>>(&raw).ok()
+}
+
+fn row_visible_len_utf16(row: &web_sys::Element) -> u32 {
+    parse_u32_attr(row, VLINE_VISIBLE_LEN_ATTR)
+        .or_else(|| parse_u32_attr(row, VLINE_LEN_ATTR))
+        .unwrap_or(0)
+}
+
+fn row_visible_to_raw_utf16(row: &web_sys::Element, rel_visible_utf16: u32) -> u32 {
+    let raw_len = parse_u32_attr(row, VLINE_LEN_ATTR).unwrap_or(0);
+    let vis = rel_visible_utf16.min(row_visible_len_utf16(row));
+    if let Some(map) = parse_offset_map_attr(row) {
+        return render::visible_to_raw_utf16(&map, vis, raw_len);
+    }
+    vis.min(raw_len)
+}
+
+fn row_visible_to_raw_utf16_click(row: &web_sys::Element, rel_visible_utf16: u32) -> u32 {
+    row_visible_to_raw_utf16(row, rel_visible_utf16)
+}
+
+fn row_hidden_gap_default_affinity(
+    row: &web_sys::Element,
+    left_raw: u32,
+    right_raw: u32,
+) -> Option<HiddenGapAffinity> {
+    let raw = row.get_attribute(VLINE_RAW_ATTR)?;
+    let left_b = utf16_to_byte_idx(&raw, left_raw);
+    let right_b = utf16_to_byte_idx(&raw, right_raw);
+    let left_context = raw[..left_b.min(raw.len())].chars().last();
+    let right_context = raw[right_b.min(raw.len())..].chars().next();
+    let is_md_marker = |c: char| c == '*' || c == '`';
+    let outside_left = right_context.is_some_and(|c| !is_md_marker(c));
+    let outside_right = left_context.is_some_and(|c| !is_md_marker(c));
+    match (outside_left, outside_right) {
+        (true, false) => Some(HiddenGapAffinity::PreferLeft),
+        (false, true) => Some(HiddenGapAffinity::PreferRight),
+        _ => None,
+    }
+}
+
+fn row_hidden_gap_raw_bounds(
+    row: &web_sys::Element,
+    rel_visible_utf16: u32,
+) -> Option<(u32, u32, Option<HiddenGapAffinity>)> {
+    let map = parse_offset_map_attr(row)?;
+    let row_visible_len = row_visible_len_utf16(row);
+    let row_raw_len = parse_u32_attr(row, VLINE_LEN_ATTR).unwrap_or(0);
+    let (left, right) =
+        hidden_gap_raw_bounds_from_map(&map, row_visible_len, row_raw_len, rel_visible_utf16)?;
+    let affinity = row_hidden_gap_default_affinity(row, left, right);
+    Some((left, right, affinity))
+}
+
+fn hidden_gap_raw_bounds_from_map(
+    map: &[render::OffsetMapSeg],
+    row_visible_len: u32,
+    row_raw_len: u32,
+    rel_visible_utf16: u32,
+) -> Option<(u32, u32)> {
+    if map.is_empty() {
+        return None;
+    }
+    let vis = rel_visible_utf16.min(row_visible_len);
+    let first = &map[0];
+    if vis == 0 && first.raw_start > 0 {
+        return Some((0, first.raw_start.min(row_raw_len)));
+    }
+    for (idx, seg) in map.iter().enumerate() {
+        if vis == seg.vis_start && idx > 0 {
+            let prev = &map[idx - 1];
+            let left = prev.raw_start + prev.len;
+            let right = seg.raw_start;
+            if right > left {
+                return Some((left, right));
+            }
+        }
+    }
+    if vis == row_visible_len {
+        if let Some(last) = map.last() {
+            let left = (last.raw_start + last.len).min(row_raw_len);
+            if row_raw_len > left {
+                return Some((left, row_raw_len));
+            }
+        }
+    }
+    None
+}
+
+fn row_boundary_client_x(row: &web_sys::Element, rel_visible_utf16: u32) -> Option<f64> {
+    let doc = web_sys::window()?.document()?;
+    let row_node: web_sys::Node = row.clone().unchecked_into();
+    let (node, offset) = plain_dom_point_for_utf16(&row_node, rel_visible_utf16)?;
+    let range = doc.create_range().ok()?;
+    let _ = range.set_start(&node, offset);
+    let _ = range.set_end(&node, offset);
+    Some(range.get_bounding_client_rect().left())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HiddenGapAffinity {
+    PreferLeft,
+    PreferRight,
+}
+
+fn node_is_inside_markdown_format(row: &web_sys::Element, target: &web_sys::Node) -> Option<bool> {
+    let mut el_opt = if let Some(el) = target.dyn_ref::<web_sys::Element>() {
+        Some(el.clone())
+    } else {
+        target.parent_element()
+    };
+    while let Some(el) = el_opt {
+        if el.is_same_node(Some(row)) {
+            return Some(false);
+        }
+        let tag = el.tag_name();
+        if tag.eq_ignore_ascii_case("strong")
+            || tag.eq_ignore_ascii_case("em")
+            || tag.eq_ignore_ascii_case("code")
+        {
+            return Some(true);
+        }
+        el_opt = el.parent_element();
+    }
+    None
+}
+
+fn dom_gap_affinity_hint(
+    row: &web_sys::Element,
+    target: &web_sys::Node,
+    target_offset: u32,
+) -> Option<HiddenGapAffinity> {
+    if target.node_type() != web_sys::Node::TEXT_NODE {
+        return None;
+    }
+    let text_len = target
+        .node_value()
+        .unwrap_or_default()
+        .encode_utf16()
+        .count() as u32;
+    if text_len == 0 {
+        return None;
+    }
+    let in_markdown = node_is_inside_markdown_format(row, target).unwrap_or(false);
+    if target_offset == 0 {
+        if in_markdown {
+            Some(HiddenGapAffinity::PreferLeft)
+        } else {
+            Some(HiddenGapAffinity::PreferRight)
+        }
+    } else if target_offset >= text_len {
+        if in_markdown {
+            Some(HiddenGapAffinity::PreferRight)
+        } else {
+            Some(HiddenGapAffinity::PreferLeft)
+        }
+    } else {
+        None
+    }
+}
+
+fn resolve_hidden_gap_raw_pos(
+    left_raw: u32,
+    right_raw: u32,
+    click_x_hint: Option<f64>,
+    boundary_x: Option<f64>,
+    dom_affinity: Option<HiddenGapAffinity>,
+    default_affinity: Option<HiddenGapAffinity>,
+    gap_affinity: Option<HiddenGapAffinity>,
+) -> u32 {
+    let click_affinity = match click_x_hint {
+        Some(click_x) => {
+            if let Some(x) = boundary_x {
+                if click_x < x {
+                    Some(HiddenGapAffinity::PreferLeft)
+                } else if click_x > x {
+                    Some(HiddenGapAffinity::PreferRight)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        None => None,
+    };
+    let final_affinity = dom_affinity
+        .or(click_affinity)
+        .or(gap_affinity)
+        .or(default_affinity);
+    let prefer_left = matches!(final_affinity, Some(HiddenGapAffinity::PreferLeft));
+    if prefer_left {
+        left_raw
+    } else {
+        right_raw
+    }
+}
+
+fn dom_point_to_editor_utf16(
+    root: &web_sys::Node,
+    target: &web_sys::Node,
+    target_offset: u32,
+    click_x_hint: Option<f64>,
+    gap_affinity: Option<HiddenGapAffinity>,
+) -> Option<u32> {
+    if target.is_same_node(Some(root)) {
+        let root_el = root.dyn_ref::<web_sys::Element>()?;
+        let rows = root_el.query_selector_all("[data-vline='1']").ok()?;
+        if rows.length() == 0 {
+            return plain_point_utf16(root, target, target_offset);
+        }
+        let idx = (target_offset as usize).min(rows.length() as usize);
+        if idx == 0 {
+            return Some(0);
+        }
+        if let Some(prev) = rows.get((idx - 1) as u32) {
+            let prev_el: web_sys::Element = prev.dyn_into().ok()?;
+            let prev_start = parse_u32_attr(&prev_el, VLINE_START_ATTR)?;
+            let prev_len = parse_u32_attr(&prev_el, VLINE_LEN_ATTR)?;
+            let hard = prev_el
+                .get_attribute(VLINE_HARD_BREAK_AFTER_ATTR)
+                .as_deref()
+                == Some("1");
+            return Some(prev_start + prev_len + if hard { 1 } else { 0 });
+        }
+        return Some(0);
+    }
+
+    if let Some(row) = row_element_from_node(target) {
+        let start = parse_u32_attr(&row, VLINE_START_ATTR)?;
+        let row_len = parse_u32_attr(&row, VLINE_LEN_ATTR)?;
+        let row_node: web_sys::Node = row.clone().unchecked_into();
+        let rel_visible = plain_point_utf16(&row_node, target, target_offset).unwrap_or(0);
+        let rel_raw = if let Some((left_raw, right_raw, default_affinity)) =
+            row_hidden_gap_raw_bounds(&row, rel_visible)
+        {
+            let boundary_x = if click_x_hint.is_some() {
+                row_boundary_client_x(&row, rel_visible)
+            } else {
+                None
+            };
+            let dom_affinity = if click_x_hint.is_some() {
+                dom_gap_affinity_hint(&row, target, target_offset)
+            } else {
+                None
+            };
+            resolve_hidden_gap_raw_pos(
+                left_raw,
+                right_raw,
+                click_x_hint,
+                boundary_x,
+                dom_affinity,
+                default_affinity,
+                gap_affinity,
+            )
+        } else {
+            row_visible_to_raw_utf16(&row, rel_visible)
+        };
+        let final_pos = start + rel_raw.min(row_len);
+        return Some(final_pos);
+    }
+
+    plain_point_utf16(root, target, target_offset)
+}
+
+fn row_raw_to_visible_utf16(row: &web_sys::Element, rel_raw_utf16: u32) -> u32 {
+    let raw_len = parse_u32_attr(row, VLINE_LEN_ATTR).unwrap_or(0);
+    let vis_len = row_visible_len_utf16(row);
+    let raw = rel_raw_utf16.min(raw_len);
+    if let Some(map) = parse_offset_map_attr(row) {
+        return render::raw_to_visible_utf16(&map, raw, vis_len);
+    }
+    raw.min(vis_len)
 }
 
 fn row_element_from_node(node: &web_sys::Node) -> Option<web_sys::Element> {
@@ -878,7 +1223,10 @@ fn plain_dom_point_for_utf16(root: &web_sys::Node, pos_utf16: u32) -> Option<(we
     out
 }
 
-fn ce_selection_utf16(el: &web_sys::HtmlElement) -> (u32, u32, u32) {
+fn ce_selection_utf16_with_affinity(
+    el: &web_sys::HtmlElement,
+    gap_affinity: Option<HiddenGapAffinity>,
+) -> (u32, u32, u32) {
     let txt = ce_view_text(el);
     let len = txt.encode_utf16().count() as u32;
 
@@ -906,45 +1254,6 @@ fn ce_selection_utf16(el: &web_sys::HtmlElement) -> (u32, u32, u32) {
         return (len, len, len);
     }
 
-    fn point_utf16(
-        root: &web_sys::Node,
-        target: &web_sys::Node,
-        target_offset: u32,
-    ) -> Option<u32> {
-        if target.is_same_node(Some(root)) {
-            let root_el = root.dyn_ref::<web_sys::Element>()?;
-            let rows = root_el.query_selector_all("[data-vline='1']").ok()?;
-            if rows.length() == 0 {
-                return plain_point_utf16(root, target, target_offset);
-            }
-            let idx = (target_offset as usize).min(rows.length() as usize);
-            if idx == 0 {
-                return Some(0);
-            }
-            if let Some(prev) = rows.get((idx - 1) as u32) {
-                let prev_el: web_sys::Element = prev.dyn_into().ok()?;
-                let prev_start = parse_u32_attr(&prev_el, VLINE_START_ATTR)?;
-                let prev_len = parse_u32_attr(&prev_el, VLINE_LEN_ATTR)?;
-                let hard = prev_el
-                    .get_attribute(VLINE_HARD_BREAK_AFTER_ATTR)
-                    .as_deref()
-                    == Some("1");
-                return Some(prev_start + prev_len + if hard { 1 } else { 0 });
-            }
-            return Some(0);
-        }
-
-        if let Some(row) = row_element_from_node(target) {
-            let start = parse_u32_attr(&row, VLINE_START_ATTR)?;
-            let row_len = parse_u32_attr(&row, VLINE_LEN_ATTR)?;
-            let row_node: web_sys::Node = row.unchecked_into();
-            let rel = plain_point_utf16(&row_node, target, target_offset).unwrap_or(0);
-            Some(start + rel.min(row_len))
-        } else {
-            plain_point_utf16(root, target, target_offset)
-        }
-    }
-
     let start_container = match range.start_container() {
         Ok(n) => n,
         Err(_) => return (len, len, len),
@@ -953,7 +1262,14 @@ fn ce_selection_utf16(el: &web_sys::HtmlElement) -> (u32, u32, u32) {
         Ok(o) => o,
         Err(_) => return (len, len, len),
     };
-    let start = point_utf16(&root_node, &start_container, start_offset).unwrap_or(len);
+    let start = dom_point_to_editor_utf16(
+        &root_node,
+        &start_container,
+        start_offset,
+        None,
+        gap_affinity,
+    )
+    .unwrap_or(len);
 
     let end_container = match range.end_container() {
         Ok(n) => n,
@@ -963,9 +1279,14 @@ fn ce_selection_utf16(el: &web_sys::HtmlElement) -> (u32, u32, u32) {
         Ok(o) => o,
         Err(_) => return (start, start, len),
     };
-    let end = point_utf16(&root_node, &end_container, end_offset).unwrap_or(start);
+    let end = dom_point_to_editor_utf16(&root_node, &end_container, end_offset, None, gap_affinity)
+        .unwrap_or(start);
 
     (start.min(len), end.min(len), len)
+}
+
+fn ce_selection_utf16(el: &web_sys::HtmlElement) -> (u32, u32, u32) {
+    ce_selection_utf16_with_affinity(el, None)
 }
 
 fn ce_current_line_info(el: &web_sys::HtmlElement) -> (u32, u32) {
@@ -1028,6 +1349,135 @@ fn ce_current_line_info(el: &web_sys::HtmlElement) -> (u32, u32) {
     (idx, total_lines)
 }
 
+fn caret_is_on_hidden_gap_boundary(el: &web_sys::HtmlElement, pos_utf16: u32) -> bool {
+    fn markdown_hidden_gap_pairs_utf16(raw: &str) -> Vec<(u32, u32)> {
+        let mut out: Vec<(u32, u32)> = Vec::new();
+        let mut i = 0usize;
+        let mut raw_utf16 = 0u32;
+
+        while i < raw.len() {
+            let rest = &raw[i..];
+
+            if let Some(after) = rest.strip_prefix('`') {
+                if let Some(end_rel) = after.find('`') {
+                    let content = &after[..end_rel];
+                    if !content.is_empty() {
+                        let token_end = i + 1 + end_rel + 1;
+                        let token_raw_utf16 = raw[i..token_end].encode_utf16().count() as u32;
+                        let open = 1u32;
+                        let close = 1u32;
+                        out.push((raw_utf16, raw_utf16 + open));
+                        out.push((
+                            raw_utf16 + token_raw_utf16 - close,
+                            raw_utf16 + token_raw_utf16,
+                        ));
+                        raw_utf16 += token_raw_utf16;
+                        i = token_end;
+                        continue;
+                    }
+                }
+            }
+
+            if let Some(after) = rest.strip_prefix("**") {
+                if let Some(end_rel) = after.find("**") {
+                    let content = &after[..end_rel];
+                    if !content.is_empty() {
+                        let token_end = i + 2 + end_rel + 2;
+                        let token_raw_utf16 = raw[i..token_end].encode_utf16().count() as u32;
+                        let open = 2u32;
+                        let close = 2u32;
+                        out.push((raw_utf16, raw_utf16 + open));
+                        out.push((
+                            raw_utf16 + token_raw_utf16 - close,
+                            raw_utf16 + token_raw_utf16,
+                        ));
+                        raw_utf16 += token_raw_utf16;
+                        i = token_end;
+                        continue;
+                    }
+                }
+            }
+
+            if let Some(after) = rest.strip_prefix('*') {
+                if let Some(end_rel) = after.find('*') {
+                    let content = &after[..end_rel];
+                    if !content.is_empty() {
+                        let token_end = i + 1 + end_rel + 1;
+                        let token_raw_utf16 = raw[i..token_end].encode_utf16().count() as u32;
+                        let open = 1u32;
+                        let close = 1u32;
+                        out.push((raw_utf16, raw_utf16 + open));
+                        out.push((
+                            raw_utf16 + token_raw_utf16 - close,
+                            raw_utf16 + token_raw_utf16,
+                        ));
+                        raw_utf16 += token_raw_utf16;
+                        i = token_end;
+                        continue;
+                    }
+                }
+            }
+
+            let Some(ch) = rest.chars().next() else {
+                break;
+            };
+            i += ch.len_utf8();
+            raw_utf16 += ch.len_utf16() as u32;
+        }
+
+        out
+    }
+
+    let Ok(rows) = el.query_selector_all("[data-vline='1']") else {
+        return false;
+    };
+    if rows.length() == 0 {
+        return false;
+    }
+    for i in 0..rows.length() {
+        let Some(row_node) = rows.get(i) else {
+            continue;
+        };
+        let Ok(row) = row_node.dyn_into::<web_sys::Element>() else {
+            continue;
+        };
+        let Some(start) = parse_u32_attr(&row, VLINE_START_ATTR) else {
+            continue;
+        };
+        let Some(row_len) = parse_u32_attr(&row, VLINE_LEN_ATTR) else {
+            continue;
+        };
+        let row_end = start + row_len;
+        if pos_utf16 < start || pos_utf16 > row_end {
+            continue;
+        }
+        let rel_raw = pos_utf16 - start;
+        let raw_text = row.get_attribute(VLINE_RAW_ATTR).unwrap_or_default();
+        let pairs = markdown_hidden_gap_pairs_utf16(&raw_text);
+        if pairs
+            .iter()
+            .any(|(left_raw, right_raw)| rel_raw == *left_raw || rel_raw == *right_raw)
+        {
+            return true;
+        }
+        return false;
+    }
+    false
+}
+
+fn choose_mouseup_caret(
+    caret_before: u32,
+    hit_pos: u32,
+    before_on_boundary: bool,
+    hit_on_boundary: bool,
+) -> u32 {
+    if before_on_boundary && !hit_on_boundary {
+        caret_before
+    } else {
+        hit_pos
+    }
+}
+
 fn utf16_line_col_at_pos(text: &str, pos_utf16: u32) -> (u32, u32) {
     let mut remaining = pos_utf16.min(text.encode_utf16().count() as u32);
     let mut line_idx = 0u32;
@@ -1045,6 +1495,34 @@ fn utf16_line_col_at_pos(text: &str, pos_utf16: u32) -> (u32, u32) {
 
     // Fallback: end of text.
     (line_idx.saturating_sub(1), 0)
+}
+
+fn prev_utf16_boundary(text: &str, caret_utf16: u32) -> u32 {
+    let mut at = 0u32;
+    for ch in text.chars() {
+        let next = at + ch.len_utf16() as u32;
+        if next >= caret_utf16 {
+            return at;
+        }
+        at = next;
+    }
+    at
+}
+
+fn next_utf16_boundary(text: &str, caret_utf16: u32) -> u32 {
+    let len = text.encode_utf16().count() as u32;
+    if caret_utf16 >= len {
+        return len;
+    }
+    let mut at = 0u32;
+    for ch in text.chars() {
+        let next = at + ch.len_utf16() as u32;
+        if next > caret_utf16 {
+            return next;
+        }
+        at = next;
+    }
+    len
 }
 
 fn utf16_pos_for_line_col(text: &str, target_line_idx: u32, target_col: u32) -> u32 {
@@ -1070,9 +1548,9 @@ fn ce_resolve_dom_point_for_utf16(
     el: &web_sys::HtmlElement,
     pos_utf16: u32,
 ) -> Option<(web_sys::Node, u32)> {
-    fn row_point(row: &web_sys::Element, rel_utf16: u32) -> (web_sys::Node, u32) {
+    fn row_point(row: &web_sys::Element, rel_visible_utf16: u32) -> (web_sys::Node, u32) {
         let row_node: web_sys::Node = row.clone().unchecked_into();
-        if let Some(point) = plain_dom_point_for_utf16(&row_node, rel_utf16) {
+        if let Some(point) = plain_dom_point_for_utf16(&row_node, rel_visible_utf16) {
             return point;
         }
         (row_node, row.child_nodes().length())
@@ -1097,21 +1575,24 @@ fn ce_resolve_dom_point_for_utf16(
             return Some(row_point(&row_el, 0));
         }
         if pos <= row_end {
-            return Some(row_point(&row_el, pos.saturating_sub(start)));
+            let rel_raw = pos.saturating_sub(start);
+            let rel_visible = row_raw_to_visible_utf16(&row_el, rel_raw);
+            return Some(row_point(&row_el, rel_visible));
         }
         if hard && pos == row_end + 1 {
             if let Some(next) = rows.get(i + 1) {
                 let next_el: web_sys::Element = next.dyn_into().ok()?;
                 return Some(row_point(&next_el, 0));
             }
-            return Some(row_point(&row_el, row_len));
+            let row_vis_end = row_raw_to_visible_utf16(&row_el, row_len);
+            return Some(row_point(&row_el, row_vis_end));
         }
     }
 
     let last = rows.get(rows.length() - 1)?;
     let last_el: web_sys::Element = last.dyn_into().ok()?;
-    let last_len = parse_u32_attr(&last_el, VLINE_LEN_ATTR).unwrap_or(0);
-    Some(row_point(&last_el, last_len))
+    let last_vis_len = row_visible_len_utf16(&last_el);
+    Some(row_point(&last_el, last_vis_len))
 }
 
 fn ce_set_selection_utf16_internal(el: &web_sys::HtmlElement, start_utf16: u32, end_utf16: u32) {
@@ -1273,19 +1754,24 @@ pub fn test_set_caret_from_client_point(
     client_x: i32,
     client_y: i32,
 ) -> bool {
-    ce_set_caret_from_client_point(el, client_x, client_y)
+    if let Some(pos_utf16) = ce_caret_utf16_from_client_point(el, client_x, client_y) {
+        ce_set_caret_utf16(el, pos_utf16);
+        true
+    } else {
+        false
+    }
 }
 
-fn ce_set_caret_from_client_point(el: &web_sys::HtmlElement, client_x: i32, client_y: i32) -> bool {
+fn ce_caret_utf16_from_client_point(
+    el: &web_sys::HtmlElement,
+    client_x: i32,
+    client_y: i32,
+) -> Option<u32> {
     if !el.is_connected() {
-        return false;
+        return None;
     }
-    let Some(win) = web_sys::window() else {
-        return false;
-    };
-    let Some(doc) = win.document() else {
-        return false;
-    };
+    let win = web_sys::window()?;
+    let doc = win.document()?;
     let root_node: web_sys::Node = el.clone().unchecked_into();
 
     let mut hit_point: Option<(web_sys::Node, u32)> = None;
@@ -1340,24 +1826,18 @@ fn ce_set_caret_from_client_point(el: &web_sys::HtmlElement, client_x: i32, clie
     }
 
     if let Some((node, offset)) = hit_point {
-        if let Ok(range) = doc.create_range() {
-            let _ = range.set_start(&node, offset);
-            let _ = range.set_end(&node, offset);
-            if let Ok(Some(sel)) = doc.get_selection() {
-                let _ = sel.remove_all_ranges();
-                let _ = sel.add_range(&range);
-                let (caret, _end, _len) = ce_selection_utf16(el);
-                ce_set_caret_utf16(el, caret);
-                return true;
-            }
+        if let Some(pos_utf16) =
+            dom_point_to_editor_utf16(&root_node, &node, offset, Some(client_x as f64), None)
+        {
+            return Some(pos_utf16);
         }
     }
 
     let Ok(rows) = el.query_selector_all("[data-vline='1']") else {
-        return false;
+        return None;
     };
     if rows.length() == 0 {
-        return false;
+        return None;
     }
 
     let mut picked: Option<web_sys::Element> = None;
@@ -1386,9 +1866,7 @@ fn ce_set_caret_from_client_point(el: &web_sys::HtmlElement, client_x: i32, clie
         }
     }
 
-    let Some(row) = picked else {
-        return false;
-    };
+    let row = picked?;
     let start = row
         .get_attribute(VLINE_START_ATTR)
         .and_then(|v| v.parse::<u32>().ok())
@@ -1397,17 +1875,24 @@ fn ce_set_caret_from_client_point(el: &web_sys::HtmlElement, client_x: i32, clie
         .get_attribute(VLINE_LEN_ATTR)
         .and_then(|v| v.parse::<u32>().ok())
         .unwrap_or(0);
-    let row_text = row
+    let row_visible_len = row_visible_len_utf16(&row);
+    let (row_text, text_left) = row
         .query_selector("[data-editor-chunk='1']")
         .ok()
         .flatten()
-        .map(|e| e.text_content().unwrap_or_default())
-        .unwrap_or_default();
-    let rect = row.get_bounding_client_rect();
-    let x_rel = (client_x as f64 - rect.left()).max(0.0);
-    let rel_utf16 = layout::utf16_for_x(&row_text, x_rel).min(row_len);
-    ce_set_caret_utf16(el, start + rel_utf16);
-    true
+        .map(|e| {
+            let text = e.text_content().unwrap_or_default();
+            let left = e.get_bounding_client_rect().left();
+            (text, left)
+        })
+        .unwrap_or_else(|| {
+            let rect = row.get_bounding_client_rect();
+            (String::new(), rect.left())
+        });
+    let x_rel = (client_x as f64 - text_left).max(0.0);
+    let rel_visible_utf16 = layout::utf16_for_x(&row_text, x_rel).min(row_visible_len);
+    let rel_raw_utf16 = row_visible_to_raw_utf16_click(&row, rel_visible_utf16).min(row_len);
+    Some(start + rel_raw_utf16)
 }
 
 fn ensure_titles_loaded(app_state: &AppContext, ac: &AutocompleteCtx) {
@@ -3434,23 +3919,28 @@ pub fn OutlineNode(
                                                         // Only refresh wiki highlight AFTER caret placement is finalized (success or give up),
                                                         // to avoid intermediate link interaction state that causes flicker.
                                                         // See issue #2.
-                                                        let mut caret_placed = ce_set_caret_from_client_point(
-                                                            &el, click_x, click_y,
-                                                        );
-                                                        if !caret_placed {
+                                                        let mut caret_pos =
+                                                            ce_caret_utf16_from_client_point(
+                                                                &el, click_x, click_y,
+                                                            );
+                                                        if caret_pos.is_none() {
                                                             // Retry caret placement without refreshing highlight first.
                                                             // Refreshing before final caret determination can cause intermediate
                                                             // highlight state and flicker. See issue #2.
-                                                            caret_placed = ce_set_caret_from_client_point(
+                                                            caret_pos = ce_caret_utf16_from_client_point(
                                                                 &el, click_x, click_y,
                                                             );
                                                         }
+                                                        if let Some(pos) = caret_pos {
+                                                            ce_set_caret_utf16(&el, pos);
+                                                        }
                                                         // Only refresh wiki highlight after we've determined final caret state.
-                                                        if caret_placed {
+                                                        if let Some(pos) = caret_pos {
                                                             let link_index =
                                                                 wiki_link_index_for_place.clone();
-                                                            ce_refresh_wiki_highlighted(
+                                                            ce_refresh_wiki_highlighted_at_caret(
                                                                 &el,
+                                                                pos,
                                                                 &|title| {
                                                                     wiki_link_exists_in_index(
                                                                         link_index.as_ref(),
@@ -3459,7 +3949,8 @@ pub fn OutlineNode(
                                                                 },
                                                             );
                                                         }
-                                                        let (col, _end, _len) = ce_selection_utf16(&el);
+                                                        let col = caret_pos
+                                                            .unwrap_or_else(|| ce_selection_utf16(&el).0);
                                                         target_cursor_col3.set(Some(col));
                                                         schedule_note_cursor_save(
                                                             cursor_save_timer_id3,
@@ -4528,7 +5019,7 @@ pub fn OutlineNode(
                                                 };
 
                                                 ce_set_caret_utf16(&el, col);
-                                                ce_refresh_wiki_highlighted(&el, &|title| {
+                                                ce_refresh_wiki_highlighted_at_caret(&el, col, &|title| {
                                                     let app_state_now = app_state_sv.get_value();
                                                     wiki_link_exists(&app_state_now, title)
                                                 });
@@ -4595,7 +5086,10 @@ pub fn OutlineNode(
                                                             &v,
                                                         )
                                                     });
-                                                    ce_refresh_wiki_highlighted(&el, &|title| {
+                                                    ce_refresh_wiki_highlighted_at_caret(
+                                                        &el,
+                                                        caret_utf16,
+                                                        &|title| {
                                                         let app_state_now = app_state_sv.get_value();
                                                         wiki_link_exists(&app_state_now, title)
                                                     });
@@ -4703,6 +5197,7 @@ pub fn OutlineNode(
                                                 if is_composing.get_untracked() {
                                                     return;
                                                 }
+                                                let key = ev.key();
                                                 let Some(el) = ev
                                                     .current_target()
                                                     .and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok())
@@ -4717,8 +5212,16 @@ pub fn OutlineNode(
                                                 else {
                                                     return;
                                                 };
+                                                let gap_affinity = match key.as_str() {
+                                                    "ArrowLeft" => Some(HiddenGapAffinity::PreferLeft),
+                                                    "ArrowRight" => Some(HiddenGapAffinity::PreferRight),
+                                                    _ => None,
+                                                };
                                                 let (caret_utf16, caret_end_utf16, _len_before) =
-                                                    ce_selection_utf16(&el);
+                                                    ce_selection_utf16_with_affinity(
+                                                        &el,
+                                                        gap_affinity,
+                                                    );
                                                 target_cursor_col.set(Some(caret_utf16));
                                                 schedule_note_cursor_save(
                                                     cursor_save_timer_id,
@@ -4731,7 +5234,10 @@ pub fn OutlineNode(
                                                 // Re-highlighting rebuilds DOM and restores a collapsed caret.
                                                 // Skip it when a range selection exists to preserve user selection.
                                                 if caret_utf16 == caret_end_utf16 {
-                                                    ce_refresh_wiki_highlighted(&el, &|title| {
+                                                    ce_refresh_wiki_highlighted_at_caret(
+                                                        &el,
+                                                        caret_utf16,
+                                                        &|title| {
                                                         let app_state_now = app_state_sv.get_value();
                                                         wiki_link_exists(&app_state_now, title)
                                                     });
@@ -4744,8 +5250,41 @@ pub fn OutlineNode(
                                                 else {
                                                     return;
                                                 };
-                                                let (caret_utf16, caret_end_utf16, _len_before) =
+                                                let (caret_before, caret_end_before, _len_before) =
                                                     ce_selection_utf16(&el);
+                                                let (caret_utf16, caret_end_utf16) =
+                                                    if caret_before == caret_end_before {
+                                                    if let Some(pos) = ce_caret_utf16_from_client_point(
+                                                        &el,
+                                                        ev.client_x(),
+                                                        ev.client_y(),
+                                                    ) {
+                                                        let before_on_boundary =
+                                                            caret_is_on_hidden_gap_boundary(
+                                                                &el,
+                                                                caret_before,
+                                                            );
+                                                        let hit_on_boundary =
+                                                            caret_is_on_hidden_gap_boundary(
+                                                                &el,
+                                                                pos,
+                                                            );
+                                                        let final_pos = choose_mouseup_caret(
+                                                            caret_before,
+                                                            pos,
+                                                            before_on_boundary,
+                                                            hit_on_boundary,
+                                                        );
+                                                        ce_set_caret_utf16(&el, final_pos);
+                                                        (final_pos, final_pos)
+                                                    } else {
+                                                        let (start, end, _len) =
+                                                            ce_selection_utf16(&el);
+                                                        (start, end)
+                                                    }
+                                                } else {
+                                                    (caret_before, caret_end_before)
+                                                };
                                                 schedule_note_cursor_save(
                                                     cursor_save_timer_id,
                                                     cursor_save_pending,
@@ -4755,7 +5294,10 @@ pub fn OutlineNode(
                                                     caret_utf16,
                                                 );
                                                 if caret_utf16 == caret_end_utf16 {
-                                                    ce_refresh_wiki_highlighted(&el, &|title| {
+                                                    ce_refresh_wiki_highlighted_at_caret(
+                                                        &el,
+                                                        caret_utf16,
+                                                        &|title| {
                                                         let app_state_now = app_state_sv.get_value();
                                                         wiki_link_exists(&app_state_now, title)
                                                     });
@@ -5200,16 +5742,44 @@ pub fn OutlineNode(
 
                                                 // Arrow Left/Right: jump to prev/next visible node at boundaries
                                                 if key == "ArrowLeft" || key == "ArrowRight" {
+                                                    if ev.shift_key() {
+                                                        // Preserve native Shift+Arrow range selection behavior.
+                                                        return;
+                                                    }
                                                     let nav_id_now = nav_id_sv.get_value();
-
-                                                    let (cursor_start, cursor_end, len) = if let Some(i) = input() {
-                                                        ce_selection_utf16(&i)
-                                                    } else {
-                                                        (0, 0, 0)
+                                                    let Some(input_el) = input() else {
+                                                        return;
                                                     };
+                                                    let gap_affinity = if key == "ArrowLeft" {
+                                                        Some(HiddenGapAffinity::PreferLeft)
+                                                    } else {
+                                                        Some(HiddenGapAffinity::PreferRight)
+                                                    };
+                                                    let (cursor_start, cursor_end, len) =
+                                                        ce_selection_utf16_with_affinity(
+                                                            &input_el,
+                                                            gap_affinity,
+                                                        );
 
-                                                    // Only trigger when selection is collapsed.
                                                     if cursor_start != cursor_end {
+                                                        // Deterministic collapse of selection for ArrowLeft/ArrowRight.
+                                                        ev.prevent_default();
+                                                        let collapse_pos = if key == "ArrowLeft" {
+                                                            cursor_start.min(cursor_end)
+                                                        } else {
+                                                            cursor_start.max(cursor_end)
+                                                        };
+                                                        ce_set_caret_utf16(&input_el, collapse_pos);
+                                                        target_cursor_col.set(Some(collapse_pos));
+                                                        ce_refresh_wiki_highlighted_at_caret(
+                                                            &input_el,
+                                                            collapse_pos,
+                                                            &|title| {
+                                                                let app_state_now =
+                                                                    app_state_sv.get_value();
+                                                                wiki_link_exists(&app_state_now, title)
+                                                            },
+                                                        );
                                                         return;
                                                     }
 
@@ -5249,7 +5819,26 @@ pub fn OutlineNode(
                                                                 &nav_id_now,
                                                             )
                                                         else {
-                                                            // No child and no next visible node: keep default caret behavior.
+                                                            // No child and no next visible node: keep caret at text end.
+                                                            ev.prevent_default();
+                                                            let len = ce_view_text(&input_el)
+                                                                .encode_utf16()
+                                                                .count()
+                                                                as u32;
+                                                            ce_set_caret_utf16(&input_el, len);
+                                                            target_cursor_col.set(Some(len));
+                                                            ce_refresh_wiki_highlighted_at_caret(
+                                                                &input_el,
+                                                                len,
+                                                                &|title| {
+                                                                    let app_state_now =
+                                                                        app_state_sv.get_value();
+                                                                    wiki_link_exists(
+                                                                        &app_state_now,
+                                                                        title,
+                                                                    )
+                                                                },
+                                                            );
                                                             return;
                                                         };
 
@@ -5292,6 +5881,30 @@ pub fn OutlineNode(
                                                             return;
                                                         }
 
+                                                        return;
+                                                    }
+
+                                                    if !ev.alt_key() && !ev.ctrl_key() && !ev.meta_key() {
+                                                        // Deterministic in-node horizontal movement.
+                                                        ev.prevent_default();
+                                                        let text = ce_view_text(&input_el);
+                                                        let len = text.encode_utf16().count() as u32;
+                                                        let next = if key == "ArrowLeft" {
+                                                            prev_utf16_boundary(&text, cursor_start)
+                                                        } else {
+                                                            next_utf16_boundary(&text, cursor_start.min(len))
+                                                        };
+                                                        ce_set_caret_utf16(&input_el, next);
+                                                        target_cursor_col.set(Some(next));
+                                                        ce_refresh_wiki_highlighted_at_caret(
+                                                            &input_el,
+                                                            next,
+                                                            &|title| {
+                                                                let app_state_now =
+                                                                    app_state_sv.get_value();
+                                                                wiki_link_exists(&app_state_now, title)
+                                                            },
+                                                        );
                                                         return;
                                                     }
                                                 }
@@ -6128,6 +6741,200 @@ mod tests {
         assert!(!should_clear_stale_editing_id(None, &navs));
         assert!(!should_clear_stale_editing_id(Some("a"), &navs));
         assert!(should_clear_stale_editing_id(Some("missing"), &navs));
+    }
+
+    #[test]
+    fn choose_mouseup_caret_keeps_boundary_when_hit_falls_off_boundary() {
+        assert_eq!(choose_mouseup_caret(25, 22, true, false), 25);
+    }
+
+    #[test]
+    fn choose_mouseup_caret_uses_hit_when_boundary_status_is_not_regressing() {
+        assert_eq!(choose_mouseup_caret(22, 25, false, true), 25);
+        assert_eq!(choose_mouseup_caret(23, 25, true, true), 25);
+        assert_eq!(choose_mouseup_caret(23, 25, false, false), 25);
+    }
+
+    #[test]
+    fn utf16_horizontal_boundary_helpers_move_by_codepoint() {
+        let s = "a😀b";
+        assert_eq!(prev_utf16_boundary(s, 3), 1);
+        assert_eq!(next_utf16_boundary(s, 1), 3);
+        assert_eq!(next_utf16_boundary(s, 3), 4);
+    }
+
+    #[test]
+    fn hidden_gap_bounds_detect_leading_and_trailing_row_edge_gaps() {
+        let map = vec![render::OffsetMapSeg {
+            vis_start: 0,
+            raw_start: 2,
+            len: 3,
+        }];
+        assert_eq!(hidden_gap_raw_bounds_from_map(&map, 3, 7, 0), Some((0, 2)));
+        assert_eq!(hidden_gap_raw_bounds_from_map(&map, 3, 7, 3), Some((5, 7)));
+    }
+
+    #[test]
+    fn hidden_gap_bounds_keep_interior_gap_detection() {
+        let map = vec![
+            render::OffsetMapSeg {
+                vis_start: 0,
+                raw_start: 0,
+                len: 2,
+            },
+            render::OffsetMapSeg {
+                vis_start: 2,
+                raw_start: 4,
+                len: 2,
+            },
+            render::OffsetMapSeg {
+                vis_start: 4,
+                raw_start: 8,
+                len: 2,
+            },
+        ];
+        assert_eq!(hidden_gap_raw_bounds_from_map(&map, 6, 10, 2), Some((2, 4)));
+        assert_eq!(hidden_gap_raw_bounds_from_map(&map, 6, 10, 4), Some((6, 8)));
+    }
+
+    #[test]
+    fn hidden_gap_resolver_uses_affinity_without_click_hint() {
+        assert_eq!(
+            resolve_hidden_gap_raw_pos(
+                10,
+                12,
+                None,
+                None,
+                None,
+                None,
+                Some(HiddenGapAffinity::PreferLeft),
+            ),
+            10
+        );
+        assert_eq!(
+            resolve_hidden_gap_raw_pos(
+                10,
+                12,
+                None,
+                None,
+                None,
+                None,
+                Some(HiddenGapAffinity::PreferRight),
+            ),
+            12
+        );
+    }
+
+    #[test]
+    fn hidden_gap_resolver_click_side_overrides_affinity_when_boundary_known() {
+        assert_eq!(
+            resolve_hidden_gap_raw_pos(
+                10,
+                12,
+                Some(99.0),
+                Some(100.0),
+                None,
+                None,
+                Some(HiddenGapAffinity::PreferRight),
+            ),
+            10
+        );
+        assert_eq!(
+            resolve_hidden_gap_raw_pos(
+                10,
+                12,
+                Some(101.0),
+                Some(100.0),
+                None,
+                None,
+                Some(HiddenGapAffinity::PreferLeft),
+            ),
+            12
+        );
+    }
+
+    #[test]
+    fn hidden_gap_resolver_falls_back_to_affinity_when_boundary_unknown() {
+        assert_eq!(
+            resolve_hidden_gap_raw_pos(
+                10,
+                12,
+                Some(101.0),
+                None,
+                None,
+                None,
+                Some(HiddenGapAffinity::PreferLeft),
+            ),
+            10
+        );
+        assert_eq!(
+            resolve_hidden_gap_raw_pos(
+                10,
+                12,
+                Some(99.0),
+                None,
+                None,
+                None,
+                Some(HiddenGapAffinity::PreferRight),
+            ),
+            12
+        );
+    }
+
+    #[test]
+    fn hidden_gap_resolver_uses_default_affinity_on_exact_boundary_click() {
+        assert_eq!(
+            resolve_hidden_gap_raw_pos(
+                10,
+                12,
+                Some(100.0),
+                Some(100.0),
+                None,
+                Some(HiddenGapAffinity::PreferLeft),
+                None,
+            ),
+            10
+        );
+        assert_eq!(
+            resolve_hidden_gap_raw_pos(
+                10,
+                12,
+                Some(100.0),
+                Some(100.0),
+                None,
+                Some(HiddenGapAffinity::PreferRight),
+                None,
+            ),
+            12
+        );
+    }
+
+    #[test]
+    fn hidden_gap_resolver_prefers_dom_affinity_over_click_side() {
+        assert_eq!(
+            resolve_hidden_gap_raw_pos(
+                10,
+                12,
+                Some(101.0),
+                Some(100.0),
+                Some(HiddenGapAffinity::PreferLeft),
+                None,
+                None,
+            ),
+            10
+        );
+        assert_eq!(
+            resolve_hidden_gap_raw_pos(
+                10,
+                12,
+                Some(99.0),
+                Some(100.0),
+                Some(HiddenGapAffinity::PreferRight),
+                None,
+                None,
+            ),
+            12
+        );
     }
 
     #[test]
