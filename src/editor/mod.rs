@@ -887,15 +887,43 @@ fn row_hidden_gap_raw_bounds(
     rel_visible_utf16: u32,
 ) -> Option<(u32, u32, Option<HiddenGapAffinity>)> {
     let map = parse_offset_map_attr(row)?;
-    let vis = rel_visible_utf16.min(row_visible_len_utf16(row));
+    let row_visible_len = row_visible_len_utf16(row);
+    let row_raw_len = parse_u32_attr(row, VLINE_LEN_ATTR).unwrap_or(0);
+    let (left, right) =
+        hidden_gap_raw_bounds_from_map(&map, row_visible_len, row_raw_len, rel_visible_utf16)?;
+    let affinity = row_hidden_gap_default_affinity(row, left, right);
+    Some((left, right, affinity))
+}
+
+fn hidden_gap_raw_bounds_from_map(
+    map: &[render::OffsetMapSeg],
+    row_visible_len: u32,
+    row_raw_len: u32,
+    rel_visible_utf16: u32,
+) -> Option<(u32, u32)> {
+    if map.is_empty() {
+        return None;
+    }
+    let vis = rel_visible_utf16.min(row_visible_len);
+    let first = &map[0];
+    if vis == 0 && first.raw_start > 0 {
+        return Some((0, first.raw_start.min(row_raw_len)));
+    }
     for (idx, seg) in map.iter().enumerate() {
         if vis == seg.vis_start && idx > 0 {
             let prev = &map[idx - 1];
             let left = prev.raw_start + prev.len;
             let right = seg.raw_start;
             if right > left {
-                let affinity = row_hidden_gap_default_affinity(row, left, right);
-                return Some((left, right, affinity));
+                return Some((left, right));
+            }
+        }
+    }
+    if vis == row_visible_len {
+        if let Some(last) = map.last() {
+            let left = (last.raw_start + last.len).min(row_raw_len);
+            if row_raw_len > left {
+                return Some((left, row_raw_len));
             }
         }
     }
@@ -6733,6 +6761,40 @@ mod tests {
         assert_eq!(prev_utf16_boundary(s, 3), 1);
         assert_eq!(next_utf16_boundary(s, 1), 3);
         assert_eq!(next_utf16_boundary(s, 3), 4);
+    }
+
+    #[test]
+    fn hidden_gap_bounds_detect_leading_and_trailing_row_edge_gaps() {
+        let map = vec![render::OffsetMapSeg {
+            vis_start: 0,
+            raw_start: 2,
+            len: 3,
+        }];
+        assert_eq!(hidden_gap_raw_bounds_from_map(&map, 3, 7, 0), Some((0, 2)));
+        assert_eq!(hidden_gap_raw_bounds_from_map(&map, 3, 7, 3), Some((5, 7)));
+    }
+
+    #[test]
+    fn hidden_gap_bounds_keep_interior_gap_detection() {
+        let map = vec![
+            render::OffsetMapSeg {
+                vis_start: 0,
+                raw_start: 0,
+                len: 2,
+            },
+            render::OffsetMapSeg {
+                vis_start: 2,
+                raw_start: 4,
+                len: 2,
+            },
+            render::OffsetMapSeg {
+                vis_start: 4,
+                raw_start: 8,
+                len: 2,
+            },
+        ];
+        assert_eq!(hidden_gap_raw_bounds_from_map(&map, 6, 10, 2), Some((2, 4)));
+        assert_eq!(hidden_gap_raw_bounds_from_map(&map, 6, 10, 4), Some((6, 8)));
     }
 
     #[test]
