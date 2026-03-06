@@ -20,6 +20,8 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 #[cfg(target_arch = "wasm32")]
 use leptos_router::components::Router;
+use std::collections::HashSet;
+use std::sync::Arc;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 
@@ -477,6 +479,21 @@ fn wiki_link_exists(app_state: &AppContext, title: &str) -> bool {
         .get_untracked()
         .iter()
         .any(|n| n.database_id == db_id && normalize_outline_page_title(&n.title) == title_norm)
+}
+
+fn build_wiki_link_title_index(notes: &[Note], db_id: &str) -> HashSet<String> {
+    notes
+        .iter()
+        .filter(|n| n.database_id == db_id)
+        .map(|n| normalize_outline_page_title(&n.title))
+        .collect()
+}
+
+fn wiki_link_exists_in_index(index: &HashSet<String>, title: &str) -> bool {
+    if title.trim().is_empty() {
+        return false;
+    }
+    index.contains(&normalize_outline_page_title(title))
 }
 
 fn resolve_wiki_link_target(
@@ -3361,6 +3378,19 @@ pub fn OutlineNode(
                                                 .filter(|state| state.content_dirty)
                                                 .map(|state| state.content.clone())
                                                 .unwrap_or_else(|| next_value.clone());
+                                            let wiki_link_index_for_activation = {
+                                                let app_state_now = app_state_sv.get_value();
+                                                let db_id_now = app_state_now
+                                                    .0
+                                                    .current_database_id
+                                                    .get_untracked()
+                                                    .unwrap_or_default();
+                                                let notes_now =
+                                                    app_state_now.0.notes.get_untracked();
+                                                Arc::new(build_wiki_link_title_index(
+                                                    &notes_now, &db_id_now,
+                                                ))
+                                            };
 
                                             // Explicit user click on outline row must override title-focus intent.
                                             if app_state
@@ -3394,29 +3424,39 @@ pub fn OutlineNode(
                                                 let id_for_save = id.clone();
                                                 let db_id_for_save = db_id.clone();
                                                 let note_id_for_save = note_id.clone();
+                                                let wiki_link_index_for_place =
+                                                    wiki_link_index_for_activation.clone();
                                                 let place = Closure::<dyn FnMut()>::new(move || {
                                                     if let Some(el) = editing_ref3
                                                         .get_untracked()
                                                         .and_then(|n| n.dyn_into::<web_sys::HtmlElement>().ok())
                                                     {
-                                                        ce_refresh_wiki_highlighted(&el, &|_title| false);
+                                                        // Only refresh wiki highlight AFTER caret placement is finalized (success or give up),
+                                                        // to avoid intermediate link interaction state that causes flicker.
+                                                        // See issue #2.
                                                         let mut caret_placed = ce_set_caret_from_client_point(
                                                             &el, click_x, click_y,
                                                         );
                                                         if !caret_placed {
-                                                            // Retry once after rebuilding highlight DOM.
-                                                            ce_refresh_wiki_highlighted(
-                                                                &el,
-                                                                &|_title| false,
-                                                            );
+                                                            // Retry caret placement without refreshing highlight first.
+                                                            // Refreshing before final caret determination can cause intermediate
+                                                            // highlight state and flicker. See issue #2.
                                                             caret_placed = ce_set_caret_from_client_point(
                                                                 &el, click_x, click_y,
                                                             );
                                                         }
+                                                        // Only refresh wiki highlight after we've determined final caret state.
                                                         if caret_placed {
+                                                            let link_index =
+                                                                wiki_link_index_for_place.clone();
                                                             ce_refresh_wiki_highlighted(
                                                                 &el,
-                                                                &|_title| false,
+                                                                &|title| {
+                                                                    wiki_link_exists_in_index(
+                                                                        link_index.as_ref(),
+                                                                        title,
+                                                                    )
+                                                                },
                                                             );
                                                         }
                                                         let (col, _end, _len) = ce_selection_utf16(&el);
@@ -6656,6 +6696,56 @@ mod tests {
             resolve_wiki_link_target(&notes, "db1", "n1", "Other"),
             (true, false)
         );
+    }
+
+    #[test]
+    fn build_wiki_link_title_index_scopes_to_db_and_keeps_exact_title_match() {
+        let notes = vec![
+            Note {
+                id: "n1".to_string(),
+                database_id: "db1".to_string(),
+                title: "My   Page".to_string(),
+                content: "".to_string(),
+                created_at: "".to_string(),
+                updated_at: "".to_string(),
+            },
+            Note {
+                id: "n2".to_string(),
+                database_id: "db2".to_string(),
+                title: "My   Page".to_string(),
+                content: "".to_string(),
+                created_at: "".to_string(),
+                updated_at: "".to_string(),
+            },
+        ];
+        let index = build_wiki_link_title_index(&notes, "db1");
+        assert!(wiki_link_exists_in_index(&index, "My   Page"));
+        assert!(!wiki_link_exists_in_index(&index, "my page"));
+        assert!(!wiki_link_exists_in_index(&index, "missing"));
+    }
+
+    #[test]
+    fn wiki_highlight_uses_snapshot_index_for_link_validity() {
+        let notes = vec![Note {
+            id: "n1".to_string(),
+            database_id: "db1".to_string(),
+            title: "Home".to_string(),
+            content: "".to_string(),
+            created_at: "".to_string(),
+            updated_at: "".to_string(),
+        }];
+        let index = build_wiki_link_title_index(&notes, "db1");
+        let html = wiki_highlight_html("[[Home]] [[Missing]]", None, &|title| {
+            wiki_link_exists_in_index(&index, title)
+        });
+        assert!(html.contains("data-wiki-title=\"Home\""));
+        assert!(html.contains("data-wiki-title=\"Missing\""));
+        assert!(html.contains(
+            "data-wiki-link-title=\"1\" class=\"text-primary underline underline-offset-2"
+        ));
+        assert!(html.contains(
+            "data-wiki-link-title=\"1\" class=\"text-muted-foreground underline underline-offset-2"
+        ));
     }
 
     #[test]
