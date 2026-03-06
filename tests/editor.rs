@@ -280,6 +280,20 @@ async fn markdown_click_hit_test_does_not_jump_to_row_start() {
 }
 
 #[wasm_bindgen_test(async)]
+async fn markdown_click_left_edge_places_caret_before_opening_marker() {
+    with_editor("**XXX**", |el| {
+        dispatch_input(&el);
+        test_set_caret_utf16(&el, 6);
+        let rect = el.get_bounding_client_rect();
+        let x = rect.left().round() as i32;
+        let y = (rect.top() + (rect.height() / 2.0)).round() as i32;
+        assert!(test_set_caret_from_client_point(&el, x, y));
+        assert_eq!(test_caret_utf16(&el), 0);
+    })
+    .await;
+}
+
+#[wasm_bindgen_test(async)]
 async fn native_input_fallback_reads_live_dom_not_stale_cache() {
     with_editor("ab", |el| {
         // Simulate a native DOM mutation path not intercepted by beforeinput
