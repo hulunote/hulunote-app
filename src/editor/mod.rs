@@ -3399,20 +3399,21 @@ pub fn OutlineNode(
                                                         .get_untracked()
                                                         .and_then(|n| n.dyn_into::<web_sys::HtmlElement>().ok())
                                                     {
-                                                        ce_refresh_wiki_highlighted(&el, &|_title| false);
+                                                        // Only refresh wiki highlight AFTER caret placement is finalized (success or give up),
+                                                        // to avoid intermediate link interaction state that causes flicker.
+                                                        // See issue #2.
                                                         let mut caret_placed = ce_set_caret_from_client_point(
                                                             &el, click_x, click_y,
                                                         );
                                                         if !caret_placed {
-                                                            // Retry once after rebuilding highlight DOM.
-                                                            ce_refresh_wiki_highlighted(
-                                                                &el,
-                                                                &|_title| false,
-                                                            );
+                                                            // Retry caret placement without refreshing highlight first.
+                                                            // Refreshing before final caret determination can cause intermediate
+                                                            // highlight state and flicker. See issue #2.
                                                             caret_placed = ce_set_caret_from_client_point(
                                                                 &el, click_x, click_y,
                                                             );
                                                         }
+                                                        // Only refresh wiki highlight after we've determined final caret state.
                                                         if caret_placed {
                                                             ce_refresh_wiki_highlighted(
                                                                 &el,
@@ -6989,4 +6990,11 @@ mod tests {
             None, "nav-1"
         ));
     }
+
+    // The fix is in the place() closure around line 3402:
+    // - We no longer call ce_refresh_wiki_highlighted in the retry path
+    // - We only call it after caret is confirmed placed (or give up)
+    //
+    // Note: A full browser/visual regression test would be needed to verify this behavior.
+    // See issue #2 for context.
 }
