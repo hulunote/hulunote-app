@@ -731,14 +731,6 @@ where
     }
 }
 
-#[cfg(test)]
-fn wiki_highlight_html<F>(s: &str, caret_utf16: Option<u32>, is_valid_wiki_link: &F) -> String
-where
-    F: Fn(&str) -> bool,
-{
-    wiki_highlight_render(s, caret_utf16, is_valid_wiki_link).html
-}
-
 fn ce_set_wiki_highlighted<F>(
     el: &web_sys::HtmlElement,
     s: &str,
@@ -7362,13 +7354,13 @@ mod tests {
 
     #[test]
     fn wiki_highlight_renders_markdown_when_caret_outside_token_range() {
-        let html = wiki_highlight_html("a **bold** z", Some(0), &|_title| false);
+        let html = wiki_highlight_render("a **bold** z", Some(0), &|_title| false).html;
         assert!(html.contains("<strong>bold</strong>"));
     }
 
     #[test]
     fn wiki_highlight_keeps_raw_markdown_when_caret_inside_token_range() {
-        let html = wiki_highlight_html("a **bold** z", Some(4), &|_title| false);
+        let html = wiki_highlight_render("a **bold** z", Some(4), &|_title| false).html;
         assert!(html.contains("**bold**"));
         assert!(!html.contains("<strong>bold</strong>"));
     }
@@ -7376,10 +7368,11 @@ mod tests {
     #[test]
     fn wiki_highlight_checks_validity_for_each_link() {
         let seen = std::cell::RefCell::new(Vec::<String>::new());
-        let html = wiki_highlight_html("x [[Missing Page]] y [[Existing]]", Some(0), &|title| {
+        let html = wiki_highlight_render("x [[Missing Page]] y [[Existing]]", Some(0), &|title| {
             seen.borrow_mut().push(title.to_string());
             title == "Existing"
-        });
+        })
+        .html;
 
         assert_eq!(
             seen.into_inner(),
@@ -7391,14 +7384,14 @@ mod tests {
 
     #[test]
     fn wiki_highlight_output_changes_with_link_validity() {
-        let valid_html = wiki_highlight_html("[[Page]]", Some(0), &|title| title == "Page");
-        let invalid_html = wiki_highlight_html("[[Page]]", Some(0), &|_title| false);
+        let valid_html = wiki_highlight_render("[[Page]]", Some(0), &|title| title == "Page").html;
+        let invalid_html = wiki_highlight_render("[[Page]]", Some(0), &|_title| false).html;
         assert_ne!(valid_html, invalid_html);
     }
 
     #[test]
     fn wiki_highlight_uses_clickable_state_styles_when_caret_is_outside_link() {
-        let html = wiki_highlight_html("x [[Page]]", Some(1), &|_title| true);
+        let html = wiki_highlight_render("x [[Page]]", Some(1), &|_title| true).html;
         assert!(html.contains(
             "data-wiki-bracket=\"1\" class=\"text-[0px] leading-none text-transparent select-none\""
         ));
@@ -7409,7 +7402,7 @@ mod tests {
 
     #[test]
     fn wiki_highlight_uses_editing_state_styles_when_caret_is_inside_link() {
-        let html = wiki_highlight_html("x [[Page]]", Some(2), &|_title| true);
+        let html = wiki_highlight_render("x [[Page]]", Some(2), &|_title| true).html;
         assert!(html.contains("data-wiki-bracket=\"1\" class=\"text-muted-foreground\""));
         assert!(!html.contains(
             "data-wiki-link-title=\"1\" class=\"text-primary underline underline-offset-2"
@@ -7418,7 +7411,7 @@ mod tests {
 
     #[test]
     fn wiki_highlight_defaults_to_clickable_state_styles_when_caret_is_unknown() {
-        let html = wiki_highlight_html("x [[Page]]", None, &|_title| true);
+        let html = wiki_highlight_render("x [[Page]]", None, &|_title| true).html;
         assert!(html.contains(
             "data-wiki-bracket=\"1\" class=\"text-[0px] leading-none text-transparent select-none\""
         ));
@@ -7542,9 +7535,10 @@ mod tests {
             updated_at: "".to_string(),
         }];
         let index = build_wiki_link_title_index(&notes, "db1");
-        let html = wiki_highlight_html("[[Home]] [[Missing]]", None, &|title| {
+        let html = wiki_highlight_render("[[Home]] [[Missing]]", None, &|title| {
             wiki_link_exists_in_index(&index, title)
-        });
+        })
+        .html;
         assert!(html.contains("data-wiki-title=\"Home\""));
         assert!(html.contains("data-wiki-title=\"Missing\""));
         assert!(html.contains(
