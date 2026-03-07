@@ -4683,19 +4683,12 @@ pub fn OutlineNode(
                                                 if let (Some(start), Some(end)) =
                                                     (link_start_utf16, link_end_utf16)
                                                 {
-                                                    // Use click-hit caret mapping (same mapping path as markdown/bold)
-                                                    // instead of stale pre-click selection state.
-                                                    let (caret_start, caret_end) =
-                                                        if let Some(hit_pos) = ce_caret_utf16_from_client_point(
-                                                            &editor_el,
-                                                            ev.client_x(),
-                                                            ev.client_y(),
-                                                        ) {
-                                                            (hit_pos, hit_pos)
-                                                        } else {
-                                                            let (s, e, _len) = ce_selection_utf16(&editor_el);
-                                                            (s, e)
-                                                        };
+                                                    // For modifier-click navigation in editing mode, gate by
+                                                    // pre-click selection state instead of click-hit caret.
+                                                    // Hit-testing usually resolves inside the clicked link itself,
+                                                    // which would incorrectly block Cmd/Ctrl+Click navigation.
+                                                    let (caret_start, caret_end, _len) =
+                                                        ce_selection_utf16(&editor_el);
                                                     if !should_navigate_wiki_link_click(
                                                         caret_start,
                                                         caret_end,
